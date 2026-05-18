@@ -1,8 +1,10 @@
 import joblib
 from sentence_transformers import SentenceTransformer
 
+import os
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 model_embedding = SentenceTransformer('all-MiniLM-L6-v2')  # Lightweight embedding model
-model_classification = joblib.load("models/log_classifier.joblib")
+model_classification = joblib.load(os.path.join(BASE_DIR, "models/log_classifier.joblib"))
 
 
 def classify_with_bert(log_message):
