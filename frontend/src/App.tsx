@@ -18,7 +18,10 @@ import {
   Download,
   AlertCircle,
   Settings,
-  Plus
+  Plus,
+  Play,
+  Pause,
+  Radio
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { 
@@ -123,6 +126,14 @@ export default function App() {
   // Live Activity Monitoring Feed State
   const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
 
+  // Live Log Stream Simulator State
+  const [simulatorActive, setSimulatorActive] = useState(false);
+  const [simulatorInterval, setSimulatorInterval] = useState(1500); // ms between log sends
+  const [simulatorConsole, setSimulatorConsole] = useState<Array<{ timestamp: string; message: string; label: string; method: string; source: string; confidence: number }>>([]);
+  const [simulatorLogsGenerated, setSimulatorLogsGenerated] = useState(0);
+  const simulatorConsoleEndRef = useRef<HTMLDivElement | null>(null);
+  const simulatorIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // API Queries
   const { data: logs = [], refetch: refetchLogs } = useQuery<LogEntry[]>({
     queryKey: ['logs'],
@@ -184,6 +195,130 @@ export default function App() {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [trainingLogs]);
+
+  // Autoscroll simulator console
+  useEffect(() => {
+    if (simulatorConsoleEndRef.current) {
+      simulatorConsoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [simulatorConsole]);
+
+  // --- Live Log Stream Simulator Templates ---
+  const LOG_TEMPLATES = useMemo(() => [
+    "GET /api/v2/users/{id} status=200 response_time={rt}ms client={ip}",
+    "POST /api/v1/orders status=201 response_time={rt}ms client={ip}",
+    "Database connection pool synchronized. Active connections: {conns}.",
+    "User admin successfully logged in from IP {ip}.",
+    "Payment gateway timeout after {rt}ms for transaction txn_{txnid}.",
+    "File upload completed: path=/uploads/report_{fid}.pdf size={size}KB.",
+    "Authentication token expired for user_id={uid}. Session terminated.",
+    "Cache miss for key=user_profile:{uid}. Falling back to database.",
+    "SSL certificate for *.example.com expires in 14 days. Renewal required.",
+    "Rate limiting triggered for client {ip}: {conns} requests in 60s.",
+    "Disk usage alert: /var/log at 92% capacity. Cleanup recommended.",
+    "Scheduled backup completed successfully. Archive size: {size}MB.",
+    "Memory usage critical: {conns}% of available RAM consumed by worker process.",
+    "WARN: Deprecated API endpoint /api/v1/legacy accessed by client {ip}.",
+    "ERROR: Unhandled exception in /api/v2/reports: NullReferenceException.",
+    "Load balancer health check passed for node-{uid}. Latency: {rt}ms.",
+    "New deployment detected: version v2.{fid}.0 rolling out to production.",
+    "Firewall blocked suspicious request from {ip}: SQL injection pattern detected.",
+    "Websocket connection established for session_{txnid}. Protocol: wss.",
+    "Container orchestrator scaled service 'api-gateway' from 3 to 5 replicas.",
+  ], []);
+
+  const generateRandomLog = useCallback(() => {
+    const template = LOG_TEMPLATES[Math.floor(Math.random() * LOG_TEMPLATES.length)];
+    return template
+      .replace('{id}', String(Math.floor(Math.random() * 9999) + 1))
+      .replace('{rt}', String(Math.floor(Math.random() * 450) + 10))
+      .replace('{ip}', `${Math.floor(Math.random()*223)+1}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`)
+      .replace('{conns}', String(Math.floor(Math.random() * 90) + 5))
+      .replace('{txnid}', Math.random().toString(36).substring(2, 10))
+      .replace('{fid}', String(Math.floor(Math.random() * 9999)))
+      .replace('{size}', String(Math.floor(Math.random() * 2048) + 64))
+      .replace('{uid}', String(Math.floor(Math.random() * 99999) + 1000));
+  }, [LOG_TEMPLATES]);
+
+  // Simulator interval effect
+  useEffect(() => {
+    if (simulatorIntervalRef.current) {
+      clearInterval(simulatorIntervalRef.current);
+      simulatorIntervalRef.current = null;
+    }
+
+    if (!simulatorActive) return;
+
+    let localCounter = 0;
+
+    const sendLog = async () => {
+      const logMsg = generateRandomLog();
+      try {
+        const res = await fetch('http://localhost:8000/api/logs/classify?save_to_db=true', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ log_message: logMsg }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setSimulatorConsole(prev => [
+            ...prev.slice(-49), // keep last 50 entries
+            {
+              timestamp: new Date().toISOString(),
+              message: logMsg,
+              label: data.target_label || 'Unknown',
+              method: data.classification_method || 'N/A',
+              source: data.source || 'Unknown',
+              confidence: data.confidence || 0,
+            },
+          ]);
+          setSimulatorLogsGenerated(prev => prev + 1);
+          localCounter++;
+          
+          // Invalidate queries every 5 logs to update charts
+          if (localCounter % 5 === 0) {
+            queryClient.invalidateQueries({ queryKey: ['logs'] });
+          }
+        }
+      } catch (err) {
+        console.error('Simulator error:', err);
+      }
+    };
+
+    // Send first log immediately
+    sendLog();
+    simulatorIntervalRef.current = setInterval(sendLog, simulatorInterval);
+
+    return () => {
+      if (simulatorIntervalRef.current) {
+        clearInterval(simulatorIntervalRef.current);
+        simulatorIntervalRef.current = null;
+      }
+    };
+  }, [simulatorActive, simulatorInterval, generateRandomLog, queryClient]);
+
+  // Cleanup on unmount and refresh logs when simulator stops
+  useEffect(() => {
+    return () => {
+      if (simulatorIntervalRef.current) {
+        clearInterval(simulatorIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const handleToggleSimulator = () => {
+    if (simulatorActive) {
+      // Stopping — refresh all data
+      setSimulatorActive(false);
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['logs'] });
+      }, 500);
+    } else {
+      setSimulatorConsole([]);
+      setSimulatorLogsGenerated(0);
+      setSimulatorActive(true);
+    }
+  };
 
   // Clean logs
   const handleClearLogs = async () => {
@@ -478,10 +613,10 @@ export default function App() {
     }
   };
 
-  // Styling helper for source badges
   const getSourceBadge = (source: string) => {
     let colorClasses = "bg-gray-500/10 text-gray-400 border-gray-500/20";
-    switch(source) {
+    const cleanSource = source.trim();
+    switch(cleanSource) {
       case 'LegacyCRM':
         colorClasses = "bg-amber-500/10 text-amber-400 border-amber-500/20";
         break;
@@ -497,10 +632,42 @@ export default function App() {
       case 'ModernHR':
         colorClasses = "bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20";
         break;
+      case 'DatabasePool':
+        colorClasses = "bg-indigo-500/10 text-indigo-400 border-indigo-500/20";
+        break;
+      case 'AuthService':
+        colorClasses = "bg-emerald-500/10 text-emerald-450 border-emerald-500/20";
+        break;
+      case 'PaymentGateway':
+        colorClasses = "bg-yellow-500/10 text-yellow-400 border-yellow-500/20";
+        break;
+      case 'APIGateway':
+        colorClasses = "bg-cyan-500/10 text-cyan-400 border-cyan-500/20";
+        break;
+      case 'SystemAgent':
+        colorClasses = "bg-orange-500/10 text-orange-400 border-orange-500/20";
+        break;
+      case 'SecurityMonitor':
+        colorClasses = "bg-red-500/10 text-red-400 border-red-500/20";
+        break;
+      case 'FileService':
+        colorClasses = "bg-teal-500/10 text-teal-400 border-teal-500/20";
+        break;
+      case 'Orchestrator':
+        colorClasses = "bg-purple-500/10 text-purple-400 border-purple-500/20";
+        break;
+      case 'LoadBalancer':
+        colorClasses = "bg-pink-500/10 text-pink-400 border-pink-500/20";
+        break;
+      default:
+        if (cleanSource.endsWith('Service')) {
+          colorClasses = "bg-violet-500/10 text-violet-400 border-violet-500/20";
+        }
+        break;
     }
     return (
       <span className={`inline-flex items-center px-2.5 py-0.5 rounded text-xs font-semibold border ${colorClasses}`}>
-        {source}
+        {cleanSource}
       </span>
     );
   };
@@ -544,7 +711,12 @@ export default function App() {
   }, [activeModel]);
 
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-gray-100 p-8 font-sans transition-all selection:bg-indigo-500/30 selection:text-indigo-200">
+    <div className="min-h-screen text-gray-100 p-8 font-sans transition-all selection:bg-indigo-500/30 selection:text-indigo-200 relative overflow-hidden">
+      {/* Background glowing shapes */}
+      <div className="absolute top-[-10%] left-1/4 w-[500px] h-[500px] glow-purple rounded-full filter blur-[120px] pointer-events-none -z-10 animate-pulse-subtle" />
+      <div className="absolute top-[30%] right-1/4 w-[400px] h-[400px] glow-blue rounded-full filter blur-[100px] pointer-events-none -z-10" />
+      <div className="absolute bottom-[10%] left-1/3 w-[450px] h-[450px] glow-pink rounded-full filter blur-[110px] pointer-events-none -z-10 animate-pulse-subtle" />
+
       <div className="max-w-6xl mx-auto space-y-8">
         
         {/* Header Section */}
@@ -560,33 +732,33 @@ export default function App() {
           </div>
           
           {/* Navigation Controls */}
-          <div className="flex bg-[#131926]/90 border border-[#222E45] p-1 rounded-xl shadow-inner select-none animate-fade-in">
+          <div className="flex glass-card p-1 rounded-xl shadow-inner select-none animate-fade-in">
             <button 
               onClick={() => setActiveTab('analytics')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
                 activeTab === 'analytics' 
-                  ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md' 
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/40'
+                  ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md scale-[1.02]' 
+                  : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
               }`}
             >
               <Layers size={15} /> Logs Analytics
             </button>
             <button 
               onClick={() => setActiveTab('training')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
                 activeTab === 'training' 
-                  ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md' 
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/40'
+                  ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md scale-[1.02]' 
+                  : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
               }`}
             >
               <Terminal size={15} /> Model Training
             </button>
             <button 
               onClick={() => setActiveTab('monitoring')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
                 activeTab === 'monitoring' 
-                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-md' 
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/40'
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-md scale-[1.02]' 
+                  : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
               }`}
             >
               <Activity size={15} /> System Monitoring
@@ -596,39 +768,39 @@ export default function App() {
 
         {/* ==================== TAB 1: LOGS ANALYTICS ==================== */}
         {activeTab === 'analytics' && (
-          <>
+          <div className="animate-fade-in animate-slide-up space-y-8">
             {/* Metric Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-[#131926] rounded-2xl p-6 border border-[#222E45] shadow-lg flex items-center space-x-4 hover:border-[#304161] transition-all group duration-300">
-                 <div className="p-3 bg-blue-500/10 text-blue-400 rounded-xl group-hover:scale-105 transition-transform">
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                 <div className="p-3 bg-blue-500/10 text-blue-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
                     <FileText size={28} />
                  </div>
                  <div>
                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Stored Logs</p>
-                   <h3 className="text-3xl font-bold text-white mt-1">{stats.total.toLocaleString()}</h3>
+                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">{stats.total.toLocaleString()}</h3>
                  </div>
               </div>
               
-              <div className="bg-[#131926] rounded-2xl p-6 border border-[#222E45] shadow-lg flex items-center space-x-4 hover:border-[#304161] transition-all group duration-300">
-                 <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-105 transition-transform">
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                 <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
                     <Cpu size={28} />
                  </div>
                  <div>
                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">ML & LLM Processed</p>
-                   <h3 className="text-3xl font-bold text-white mt-1">
+                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
                      {stats.complex.count.toLocaleString()}
                      <span className="text-sm font-normal text-indigo-400 ml-2">({stats.complex.percent}%)</span>
                    </h3>
                  </div>
               </div>
 
-              <div className="bg-[#131926] rounded-2xl p-6 border border-[#222E45] shadow-lg flex items-center space-x-4 hover:border-[#304161] transition-all group duration-300">
-                 <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl group-hover:scale-105 transition-transform">
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                 <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
                     <Zap size={28} />
                  </div>
                  <div>
                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Regex Pattern Matches</p>
-                   <h3 className="text-3xl font-bold text-white mt-1">
+                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
                      {stats.regex.count.toLocaleString()}
                      <span className="text-sm font-normal text-emerald-400 ml-2">({stats.regex.percent}%)</span>
                    </h3>
@@ -639,23 +811,23 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {/* Upload panel (Left) */}
               <div className="lg:col-span-1 space-y-6">
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg">
+                <div className="glass-card rounded-2xl p-6 shadow-lg animate-fade-in">
                   <h2 className="text-lg font-semibold text-white mb-2">Upload Logs to Classify</h2>
                   <p className="text-xs text-gray-400 mb-4">
-                    Choose a CSV file with logs. The headers must map to <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">source</code> and <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">log_message</code>.
+                    Choose a CSV file with logs. The headers must map to <code className="bg-gray-800/50 text-gray-300 px-1.5 py-0.5 rounded font-mono">source</code> and <code className="bg-gray-800/50 text-gray-300 px-1.5 py-0.5 rounded font-mono">log_message</code>.
                   </p>
                   
                   <div 
                     {...getLogUploadProps()} 
-                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${
                       isLogDragActive 
-                        ? 'border-blue-500 bg-blue-500/5' 
-                        : 'border-[#2D3E5D] hover:border-gray-500 hover:bg-[#182030]'
+                        ? 'border-blue-500 bg-blue-500/10 scale-[0.99]' 
+                        : 'border-[#2D3E5D] hover:border-blue-500/50 hover:bg-[#182030]/30'
                     }`}
                   >
                     <input {...getLogUploadInputProps()} />
                     <div className="flex flex-col items-center justify-center space-y-4">
-                      <div className="p-3 bg-gray-800/80 rounded-full text-gray-400">
+                      <div className="p-3 bg-gray-800/80 rounded-full text-gray-400 transition-all duration-300 hover:scale-110">
                         <UploadCloud size={28} />
                       </div>
                       <div>
@@ -667,7 +839,7 @@ export default function App() {
 
                   {/* Upload Progress */}
                   {uploadJobId && (
-                    <div className="mt-6 p-4 bg-[#182030] rounded-xl border border-[#2D3E5D] space-y-3">
+                    <div className="mt-6 p-4 bg-[#182030]/65 rounded-xl border border-[#2D3E5D]/80 space-y-3 animate-fade-in">
                       <div className="flex justify-between items-center text-xs">
                         <span className="text-gray-400 font-mono text-ellipsis overflow-hidden max-w-[150px]">Job: {uploadJobId}</span>
                         <span className="text-white font-semibold">
@@ -685,7 +857,7 @@ export default function App() {
                         <span>Total: {uploadProgress.total}</span>
                       </div>
                       {uploadProgress.status === 'completed' && (
-                        <p className="text-emerald-400 text-xs mt-2 flex items-center gap-1 font-medium bg-emerald-500/5 p-2 rounded border border-emerald-500/10">
+                        <p className="text-emerald-450 text-xs mt-2 flex items-center gap-1 font-medium bg-emerald-500/10 p-2 rounded border border-emerald-500/20">
                           <CheckCircle size={14} /> Processing complete! Table updated.
                         </p>
                       )}
@@ -694,8 +866,8 @@ export default function App() {
                 </div>
                 
                 {/* Active Model Indicator */}
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg space-y-4">
-                  <h3 className="font-semibold text-white flex items-center gap-2 text-sm border-b border-gray-800 pb-2">
+                <div className="glass-card rounded-2xl p-6 shadow-lg space-y-4 animate-fade-in">
+                  <h3 className="font-semibold text-white flex items-center gap-2 text-sm border-b border-gray-800/80 pb-2">
                     <Cpu size={16} className="text-indigo-400" /> Active Machine Learning Model
                   </h3>
                   {activeModel && activeModel.version_tag ? (
@@ -725,10 +897,10 @@ export default function App() {
 
               {/* Search & Logs list (Right) */}
               <div className="lg:col-span-2 space-y-4">
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] shadow-lg overflow-hidden">
+                <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
                   
                   {/* Search and Filters */}
-                  <div className="p-4 bg-[#171E2E] border-b border-[#222E45] flex flex-col sm:flex-row gap-3 items-center">
+                  <div className="p-4 bg-[#171E2E]/40 border-b border-[#222E45]/60 flex flex-col sm:flex-row gap-3 items-center">
                     <div className="relative w-full sm:flex-1">
                       <span className="absolute inset-y-0 left-3 flex items-center text-gray-500">
                         <Search size={16} />
@@ -846,18 +1018,18 @@ export default function App() {
                 </div>
               </div>
             </div>
-          </>
+          </div>
         )}
 
         {/* ==================== TAB 2: MODEL TRAINING ==================== */}
         {activeTab === 'training' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="animate-fade-in animate-slide-up grid grid-cols-1 lg:grid-cols-3 gap-8">
             
             {/* Left: Trigger panel & Active stats */}
             <div className="lg:col-span-1 space-y-6">
               
               {/* Training upload */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg">
+              <div className="glass-card rounded-2xl p-6 shadow-lg">
                 <h2 className="text-lg font-semibold text-white mb-2">Train Log Classifier</h2>
                 <p className="text-xs text-gray-400 mb-4">
                   Upload a labeled training CSV dataset containing <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">log_message</code> and <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">target_label</code> columns to train a new Logistic Regression classifier.
@@ -927,7 +1099,7 @@ export default function App() {
               </div>
 
               {/* Active model summary card */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg space-y-4">
+              <div className="glass-card rounded-2xl p-6 shadow-lg space-y-4 animate-fade-in">
                 <h3 className="font-semibold text-white flex items-center gap-2 text-sm border-b border-gray-800 pb-2">
                   <CheckCircle size={16} className="text-emerald-400" /> Active Model Overview
                 </h3>
@@ -960,7 +1132,7 @@ export default function App() {
             <div className="lg:col-span-2 space-y-6">
               
               {/* Custom Regex Rules Manager */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] shadow-lg p-6 space-y-4">
+              <div className="glass-card rounded-2xl shadow-lg p-6 space-y-4 animate-fade-in">
                 <h3 className="font-semibold text-white text-sm flex items-center gap-2 border-b border-gray-800 pb-2">
                   <Settings size={16} className="text-blue-400 animate-spin-slow" /> Custom Regex Rules Manager
                 </h3>
@@ -1065,7 +1237,7 @@ export default function App() {
 
               {/* Classification Report Card */}
               {activeModel && activeModel.report && (
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] shadow-lg overflow-hidden">
+                <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
                   <div className="p-4 bg-[#171E2E] border-b border-[#222E45]">
                     <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                       <Activity size={16} className="text-purple-400" /> Active Model Classification Report
@@ -1099,7 +1271,7 @@ export default function App() {
               )}
 
               {/* Trained Versions History Table */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] shadow-lg overflow-hidden">
+              <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
                 <div className="p-4 bg-[#171E2E] border-b border-[#222E45]">
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                     <History size={16} className="text-indigo-400" /> Trained Model History & Version Registry
@@ -1160,15 +1332,15 @@ export default function App() {
 
         {/* ==================== TAB 3: SYSTEM MONITORING ==================== */}
         {activeTab === 'monitoring' && (
-          <div className="space-y-8 animate-fade-in">
+          <div className="animate-fade-in animate-slide-up space-y-8">
             
             {/* System Status Indicators Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
               
               {/* postgres */}
-              <div className="bg-[#131926] rounded-2xl p-5 border border-[#222E45] shadow-lg flex items-center justify-between">
+              <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
-                  <div className={`p-2.5 rounded-xl ${systemStatus?.database === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                  <div className={`p-2.5 rounded-xl transition-all duration-300 group-hover:scale-105 ${systemStatus?.database === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                     <Server size={22} />
                   </div>
                   <div>
@@ -1178,13 +1350,13 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.database === 'healthy' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.database === 'healthy' ? 'bg-emerald-500 animate-pulse-subtle' : 'bg-red-500'}`} />
               </div>
 
               {/* redis */}
-              <div className="bg-[#131926] rounded-2xl p-5 border border-[#222E45] shadow-lg flex items-center justify-between">
+              <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
-                  <div className={`p-2.5 rounded-xl ${systemStatus?.redis === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                  <div className={`p-2.5 rounded-xl transition-all duration-300 group-hover:scale-105 ${systemStatus?.redis === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                     <Database size={22} />
                   </div>
                   <div>
@@ -1194,13 +1366,13 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.redis === 'healthy' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.redis === 'healthy' ? 'bg-emerald-500 animate-pulse-subtle' : 'bg-red-500'}`} />
               </div>
 
               {/* worker */}
-              <div className="bg-[#131926] rounded-2xl p-5 border border-[#222E45] shadow-lg flex items-center justify-between">
+              <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
-                  <div className={`p-2.5 rounded-xl ${systemStatus?.celery_worker === 'active' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                  <div className={`p-2.5 rounded-xl transition-all duration-300 group-hover:scale-105 ${systemStatus?.celery_worker === 'active' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                     <Cpu size={22} />
                   </div>
                   <div>
@@ -1210,13 +1382,13 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.celery_worker === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.celery_worker === 'active' ? 'bg-emerald-500 animate-pulse-subtle' : 'bg-red-500'}`} />
               </div>
 
               {/* groq */}
-              <div className="bg-[#131926] rounded-2xl p-5 border border-[#222E45] shadow-lg flex items-center justify-between">
+              <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
-                  <div className={`p-2.5 rounded-xl ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                  <div className={`p-2.5 rounded-xl transition-all duration-300 group-hover:scale-105 ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
                     <Activity size={22} />
                   </div>
                   <div>
@@ -1226,7 +1398,7 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse-subtle'}`} />
               </div>
 
             </div>
@@ -1235,7 +1407,7 @@ export default function App() {
             {logs.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
                 {/* Method Breakdown Chart */}
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-5 shadow-lg flex flex-col h-[320px]">
+                <div className="glass-card rounded-2xl p-5 shadow-lg flex flex-col h-[320px]">
                   <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Classification Methods Ratio</h4>
                   <div className="flex-1 min-h-0 relative">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1267,7 +1439,7 @@ export default function App() {
                 </div>
 
                 {/* Log Categories Distribution Bar Chart */}
-                <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-5 shadow-lg flex flex-col h-[320px]">
+                <div className="glass-card rounded-2xl p-5 shadow-lg flex flex-col h-[320px]">
                   <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Log Categories Distribution</h4>
                   <div className="flex-1 min-h-0">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1296,7 +1468,7 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               
               {/* Method Usage progress bars */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg space-y-6">
+              <div className="glass-card rounded-2xl p-6 shadow-lg space-y-6">
                 <h3 className="text-base font-semibold text-white border-b border-gray-800 pb-3 flex items-center gap-2">
                   <Zap size={16} className="text-blue-400" /> Pipeline Method Performance
                 </h3>
@@ -1344,7 +1516,7 @@ export default function App() {
               </div>
 
               {/* Real-time Activity Feed */}
-              <div className="bg-[#131926] rounded-2xl border border-[#222E45] p-6 shadow-lg flex flex-col">
+              <div className="glass-card rounded-2xl p-6 shadow-lg flex flex-col">
                 <h3 className="text-base font-semibold text-white border-b border-gray-800 pb-3 flex justify-between items-center">
                   <span className="flex items-center gap-2"><Activity size={16} className="text-pink-400 animate-pulse" /> Live Log Classification Stream</span>
                   <span className="text-[10px] text-gray-500">Last 5 activities</span>
@@ -1373,6 +1545,122 @@ export default function App() {
                 )}
               </div>
 
+            </div>
+
+            {/* ====== LIVE LOG STREAM SIMULATOR ====== */}
+            <div className="glass-card rounded-2xl shadow-xl overflow-hidden animate-fade-in">
+              <div className="p-5 bg-gradient-to-r from-[#131926] to-[#171E2E] border-b border-[#222E45]">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2.5 rounded-xl transition-all duration-300 ${
+                      simulatorActive 
+                        ? 'bg-emerald-500/15 text-emerald-400 shadow-lg shadow-emerald-500/10' 
+                        : 'bg-gray-700/20 text-gray-400'
+                    }`}>
+                      <Radio size={22} className={simulatorActive ? 'animate-pulse' : ''} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        Live Log Stream Simulator
+                        {simulatorActive && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 font-mono uppercase tracking-wider animate-pulse">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Streaming
+                          </span>
+                        )}
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-0.5">Generate synthetic production logs and stream them through the classification pipeline in real-time.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4">
+                    {/* Interval Speed Control */}
+                    <div className="flex flex-col items-end gap-1">
+                      <label className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Interval: {(simulatorInterval / 1000).toFixed(1)}s</label>
+                      <input
+                        type="range"
+                        min={500}
+                        max={3000}
+                        step={100}
+                        value={simulatorInterval}
+                        onChange={(e) => setSimulatorInterval(Number(e.target.value))}
+                        disabled={simulatorActive}
+                        className="w-28 h-1 accent-indigo-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      />
+                    </div>
+
+                    {/* Toggle Button */}
+                    <button
+                      onClick={handleToggleSimulator}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all duration-300 shadow-lg ${
+                        simulatorActive
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 hover:shadow-red-500/10'
+                          : 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white hover:shadow-emerald-500/25 hover:scale-[1.02]'
+                      }`}
+                    >
+                      {simulatorActive ? <><Pause size={16} /> Stop Stream</> : <><Play size={16} /> Start Stream</>}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Stats bar */}
+                {simulatorLogsGenerated > 0 && (
+                  <div className="mt-4 flex items-center gap-6 text-xs animate-fade-in">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500">Logs Generated:</span>
+                      <span className="font-bold font-mono text-white">{simulatorLogsGenerated}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500">Speed:</span>
+                      <span className="font-mono text-indigo-400">{(simulatorInterval / 1000).toFixed(1)}s/log</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500">Console Buffer:</span>
+                      <span className="font-mono text-gray-300">{simulatorConsole.length}/50</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Scrolling Console */}
+              <div className="bg-[#070A13] border-t border-[#242F4D]">
+                <div className="p-3 bg-[#0C1120] border-b border-[#1E293B] flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1.5">
+                      <span className="h-2.5 w-2.5 rounded-full bg-red-500/80" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-yellow-500/80" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-green-500/80" />
+                    </div>
+                    <span className="text-xs font-mono font-semibold text-gray-400 ml-1">simulator_output.log</span>
+                  </div>
+                  {simulatorActive && (
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-mono uppercase tracking-wide animate-pulse">● Live</span>
+                  )}
+                </div>
+                <div className="p-4 font-mono text-xs max-h-[240px] overflow-y-auto space-y-1.5 bg-[#090C16] min-h-[120px]">
+                  {simulatorConsole.length === 0 ? (
+                    <div className="text-gray-600 italic py-8 text-center">
+                      {simulatorActive ? 'Initializing stream...' : 'Click "Start Stream" to begin generating synthetic production logs.'}
+                    </div>
+                  ) : (
+                    simulatorConsole.map((entry, idx) => (
+                      <div key={idx} className="flex gap-2 items-start group hover:bg-[#0E1425] px-1 py-0.5 rounded transition-colors animate-fade-in">
+                        <span className="text-gray-600 select-none shrink-0">[{new Date(entry.timestamp).toLocaleTimeString()}]</span>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                          entry.method === 'ML' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
+                          entry.method === 'Regex' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                          entry.method === 'LLM' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                          'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                        }`}>{entry.method}</span>
+                        <span className="text-cyan-400/70 shrink-0">{entry.source}</span>
+                        <span className="text-gray-300 break-all">{entry.message}</span>
+                        <span className="ml-auto text-emerald-400/80 shrink-0 font-semibold">→ {entry.label}</span>
+                        <span className="text-gray-500 shrink-0">({(entry.confidence * 100).toFixed(0)}%)</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={simulatorConsoleEndRef} />
+                </div>
+              </div>
             </div>
 
           </div>

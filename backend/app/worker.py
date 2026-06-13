@@ -36,6 +36,8 @@ LOG_MESSAGE_ALIASES = [
 SOURCE_ALIASES = [
     "source", "origin", "system", "application", "app",
     "service", "component", "endpoint", "module", "log_source",
+    "src", "host", "hostname", "logger", "ip", "caller", "thread",
+    "class", "syslog_tag", "tag", "device", "sender", "client", "agent"
 ]
 LABEL_ALIASES = [
     "target_label", "target label", "targetlabel",
@@ -128,6 +130,10 @@ def process_csv_task(self, file_path: str):
                 if not log_msg:
                     processed += 1
                     continue
+
+                if source.strip() == "Unknown" or not source.strip():
+                    from app.services.classify import infer_source
+                    source = infer_source(log_msg)
 
                 label, method, confidence = classify_log(source, log_msg)
 
@@ -226,6 +232,9 @@ def train_model_task(self, file_path: str, dataset_name: str):
                 
             if auto_labeling:
                 src = (row.get(src_col, "Unknown") or "Unknown").strip() if src_col else "Unknown"
+                if src == "Unknown" or not src:
+                    from app.services.classify import infer_source
+                    src = infer_source(msg)
                 try:
                     lbl, _, _ = classify_log(src, msg)
                 except Exception as e:

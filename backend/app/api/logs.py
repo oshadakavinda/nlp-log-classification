@@ -12,7 +12,7 @@ from app.database import get_session
 from app.models.log import LogEntry
 from app.models.model_version import ModelVersion
 from app.models.regex_rule import RegexRule
-from app.services.classify import classify_log
+from app.services.classify import classify_log, infer_source
 from app.core.config import settings
 import asyncio
 import re
@@ -93,7 +93,7 @@ async def train_model(file: UploadFile = File(...)):
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV.")
         
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     upload_dir = os.path.join(backend_dir, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     
@@ -130,7 +130,7 @@ def activate_model_version(version_id: int, session: Session = Depends(get_sessi
     if not mv:
         raise HTTPException(status_code=404, detail="Model version not found.")
     
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     model_path = os.path.join(backend_dir, f"models/versions/{mv.version_tag}.joblib")
     meta_path = os.path.join(backend_dir, f"models/versions/{mv.version_tag}_metadata.json")
     
@@ -165,7 +165,7 @@ def get_active_model(session: Session = Depends(get_session)):
     stmt = select(ModelVersion).where(ModelVersion.is_active == True)
     active_version = session.exec(stmt).first()
     
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     active_meta_path = os.path.join(backend_dir, "models/log_classifier_metadata.json")
     
     file_meta = {}
@@ -194,7 +194,7 @@ def get_active_model(session: Session = Depends(get_session)):
 
 @router.get("/download-dataset")
 def download_dataset():
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     dataset_path = os.path.join(backend_dir, "training/dataset/synthetic_logs.csv")
     if os.path.exists(dataset_path):
         return FileResponse(dataset_path, media_type="text/csv", filename="synthetic_logs.csv")
@@ -240,20 +240,38 @@ def get_system_status(session: Session = Depends(get_session)):
 # --- Production-Ready Real-Time Classification Service API ---
 
 @router.post("/classify")
-def classify_logs_api(payload: Union[SingleLogRequest, List[SingleLogRequest]]):
+def classify_logs_api(
+    payload: Union[SingleLogRequest, List[SingleLogRequest]],
+    save_to_db: bool = False,
+    session: Session = Depends(get_session)
+):
     is_list = isinstance(payload, list)
     items = payload if is_list else [payload]
     
     results = []
     for item in items:
-        label, method, confidence = classify_log(item.source or "Unknown", item.log_message)
-        results.append({
+        source = (item.source or "Unknown").strip()
+        if source == "Unknown" or not source:
+            source = infer_source(item.log_message)
+            
+        label, method, confidence = classify_log(source, item.log_message)
+        
+        entry_data = {
             "log_message": item.log_message,
-            "source": item.source or "Unknown",
+            "source": source,
             "target_label": label,
             "classification_method": method,
             "confidence": round(confidence, 4)
-        })
+        }
+        
+        if save_to_db:
+            db_entry = LogEntry(**entry_data)
+            session.add(db_entry)
+            
+        results.append(entry_data)
+        
+    if save_to_db:
+        session.commit()
         
     return results if is_list else results[0]
 
