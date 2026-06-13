@@ -181,3 +181,26 @@ For direct program integrations, query the production classification endpoint:
     "confidence": 0.985
   }
   ```
+
+---
+
+## 🎯 What You Can Do with This Project (Use Cases)
+
+1. **Real-Time Security & Intrusion Detection (SIEM)**:
+   - Run active traffic log streams through the `/api/logs/classify` production API.
+   - Instantly catch attacks (like unauthorized data access, brute-forcing, or admin privilege escalations) and generate security alerts.
+
+2. **Automated Incident Response & Alerting**:
+   - Classify logs as `Critical Error` or `Workflow Error` in real-time.
+   - Hook the classification outputs to Slack, PagerDuty, or Webhooks to notify engineering teams the second an anomaly is detected.
+
+3. **Log Noise Filtering & Cost Optimization**:
+   - Apply dynamic custom regex rules to identify high-volume, low-severity messages (such as standard HTTP status codes, backup completes).
+   - Filter them out or route them to cold storage to optimize database storage costs.
+
+4. **Automated Knowledge Distillation**:
+   - Feed raw, unlabeled log streams into the training console.
+   - The platform will auto-label the dataset using the pipeline (Regex + ML + LLM) and fit a compact, high-speed ML classifier for local deployments.
+
+5. **Operational Monitoring & Analytics**:
+   - Visualize system health, pipeline classification ratios, and label distribution curves to quickly detect anomalies or service degradation.
