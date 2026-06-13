@@ -25,50 +25,115 @@ This project implements a hybrid log classification system, combining three comp
 
 ## Folder Structure
 
-1. **`training/`**:
-   - Contains the code for training models using Sentence Transformer and Logistic Regression.
-   - Includes the code for regex-based classification.
-
-2. **`models/`**:
-   - Stores the saved models, including Sentence Transformer embeddings and the Logistic Regression model.
-
-3. **`resources/`**:
-   - This folder contains resource files such as test CSV files, output files, images, etc.
-
-4. **Root Directory**:
-   - Contains the FastAPI server code (`server.py`).
+- **`backend/`**: The FastAPI backend, Celery worker, ML model training files, and database integration.
+  - **`app/`**: Application source code (routes, database configuration, celery tasks, services).
+  - **`models/`**: Pre-trained machine learning classification models.
+  - **`training/`**: Notebooks and scripts for model training.
+  - **`resources/`**: Test CSV data files and sample logs.
+- **`frontend/`**: The React + TypeScript + Vite frontend.
+- **`docker-compose.yml`**: Docker orchestration for the database, Redis, Celery, and API.
 
 ---
 
-## Setup Instructions
+## Setup & Running Instructions
 
-1. **Install Dependencies**:
-   Make sure you have Python installed on your system. Install the required Python libraries by running the following command:
+You can run the project either using **Docker Compose** (recommended for quick setup) or **Locally** (manual step-by-step setup).
 
-   ```bash
-   pip install -r requirements.txt
+### Option 1: Running with Docker Compose (Recommended)
+
+This method spins up all backend services (PostgreSQL, Redis, FastAPI, Celery worker) automatically.
+
+1. **Create the Environment File**:
+   In the root directory, create a `.env` file to configure your environment variables (e.g., Groq API key):
+   ```env
+   GROQ_API_KEY=your_groq_api_key_here
    ```
 
-2. **Run the FastAPI Server**:
-   To start the server, use the following command:
-
+2. **Start the Backend Services**:
+   From the root directory, run:
    ```bash
-   uvicorn server:app --reload
+   docker compose up --build
    ```
+   This will start:
+   - **PostgreSQL** database on port `5432`
+   - **Redis** broker on port `6379`
+   - **FastAPI backend** on port `8000` (API Docs: `http://localhost:8000/docs`)
+   - **Celery Worker** to handle background tasks.
 
-   Once the server is running, you can access the API at:
-   - `http://127.0.0.1:8000/` (Main endpoint)
-   - `http://127.0.0.1:8000/docs` (Interactive Swagger documentation)
-   - `http://127.0.0.1:8000/redoc` (Alternative API documentation)
+3. **Start the Frontend**:
+   Open a new terminal, navigate to the `frontend` folder, install the packages, and start the development server:
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+   Access the frontend application at: `http://localhost:5173` (or the port outputted by Vite).
+
+---
+
+### Option 2: Running Locally (Manual Setup)
+
+If you prefer to run services individually without Docker, follow these steps:
+
+#### 1. Setup Backend
+- Ensure you have **PostgreSQL** and **Redis** installed and running on their default ports.
+- Navigate to the `backend/` folder:
+  ```bash
+  cd backend
+  ```
+- Create a virtual environment and activate it:
+  - **Windows (PowerShell)**:
+    ```powershell
+    python -m venv venv
+    .\venv\Scripts\Activate.ps1
+    ```
+  - **macOS/Linux**:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate
+    ```
+- Install dependencies:
+  ```bash
+  pip install -r requirements.txt
+  ```
+- Create a `.env` file inside the `backend/` folder:
+  ```env
+  DATABASE_URL=postgresql://user:password@localhost:5432/logsdb
+  CELERY_BROKER_URL=redis://localhost:6379/0
+  CELERY_RESULT_BACKEND=redis://localhost:6379/0
+  GROQ_API_KEY=your_groq_api_key_here
+  ```
+  *(Note: You can also use SQLite by changing `DATABASE_URL=sqlite:///./logs.db` if you do not want to install PostgreSQL).*
+- Start the FastAPI application:
+  ```bash
+  uvicorn app.main:app --reload --port 8000
+  ```
+- In a separate terminal with the virtual environment activated, start the Celery worker:
+  ```bash
+  celery -A app.worker.celery_app worker --loglevel=info
+  ```
+
+#### 2. Setup Frontend
+- Navigate to the `frontend/` folder:
+  ```bash
+  cd ../frontend
+  ```
+- Install node dependencies and run the Vite dev server:
+  ```bash
+  npm install
+  npm run dev
+  ```
+- The frontend will be running at `http://localhost:5173`.
 
 ---
 
 ## Usage
 
-Upload a CSV file containing logs to the FastAPI endpoint for classification. Ensure the file has the following columns:
-- `source`
-- `log_message`
-
-The output will be a CSV file with an additional column `target_label`, which represents the classified label for each log entry.
+1. Open the frontend UI at `http://localhost:5173`.
+2. Upload a CSV file of logs containing at least these headers:
+   - `source`
+   - `log_message`
+3. The background task handles log ingestion, classifies each entry using the hybrid framework, and updates the dashboard in real-time.
+4. You can also query/manage logs directly via the FastAPI Swagger UI at `http://localhost:8000/docs`.
 
 
