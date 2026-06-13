@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, Fragment } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
   UploadCloud,
@@ -116,7 +116,7 @@ export default function App() {
 
   const uploadWsRef = useRef<WebSocket | null>(null);
   const trainWsRef = useRef<WebSocket | null>(null);
-  const terminalEndRef = useRef<HTMLDivElement | null>(null);
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Upload Job State
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
@@ -135,6 +135,7 @@ export default function App() {
 
   // Correction and Inspection states
   const [editingLogId, setEditingLogId] = useState<number | null>(null);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [inspectingVersion, setInspectingVersion] = useState<ModelVersion | null>(null);
   const [devTab, setDevTab] = useState<'curl' | 'python' | 'node'>('curl');
 
@@ -151,7 +152,7 @@ export default function App() {
   const [simulatorInterval, setSimulatorInterval] = useState(1500); // ms between log sends
   const [simulatorConsole, setSimulatorConsole] = useState<Array<{ timestamp: string; message: string; label: string; method: string; source: string; confidence: number }>>([]);
   const [simulatorLogsGenerated, setSimulatorLogsGenerated] = useState(0);
-  const simulatorConsoleEndRef = useRef<HTMLDivElement | null>(null);
+  const simulatorContainerRef = useRef<HTMLDivElement | null>(null);
   const simulatorIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // API Queries
@@ -229,15 +230,29 @@ export default function App() {
 
   // Autoscroll terminal console
   useEffect(() => {
-    if (terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = terminalContainerRef.current;
+    if (container) {
+      const isNearBottom = container.scrollHeight - container.clientHeight - container.scrollTop < 100;
+      if (isNearBottom || trainingLogs.length <= 1) {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
     }
   }, [trainingLogs]);
 
   // Autoscroll simulator console
   useEffect(() => {
-    if (simulatorConsoleEndRef.current) {
-      simulatorConsoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = simulatorContainerRef.current;
+    if (container) {
+      const isNearBottom = container.scrollHeight - container.clientHeight - container.scrollTop < 100;
+      if (isNearBottom || simulatorConsole.length <= 1) {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
     }
   }, [simulatorConsole]);
 
@@ -1029,7 +1044,7 @@ export default function App() {
               </div>
 
               {/* Search & Logs list (Right) */}
-              <div className="lg:col-span-2 space-y-4">
+              <div className="lg:col-span-2 min-w-0 space-y-4">
                 <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
 
                   {/* Search and Filters */}
@@ -1108,55 +1123,122 @@ export default function App() {
                         </thead>
                         <tbody className="divide-y divide-[#1E293B] text-xs">
                           {filteredLogs.map((log) => (
-                            <tr key={log.id} className="hover:bg-[#1C2538]/50 transition-colors">
-                              <td className="py-3 px-4 whitespace-nowrap">
-                                {getSourceBadge(log.source)}
-                              </td>
-                              <td className="py-3 px-4 font-mono text-gray-200 max-w-xs truncate" title={log.log_message}>
-                                {log.log_message}
-                              </td>
-                               <td className="py-3 px-4 whitespace-nowrap">
-                                {editingLogId === log.id ? (
-                                  <select
-                                    defaultValue={log.target_label || ''}
-                                    onChange={(e) => handleSaveLabelCorrection(log.id, e.target.value)}
-                                    onBlur={() => setEditingLogId(null)}
-                                    className="bg-[#1C2538] text-xs text-white border border-[#2D3E5D] rounded px-2 py-1 focus:outline-none focus:border-blue-500"
-                                    autoFocus
-                                  >
-                                    <option value="" disabled>Select label...</option>
-                                    {['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].map(lbl => (
-                                      <option key={lbl} value={lbl}>{lbl}</option>
-                                    ))}
-                                    {uniqueLabels.filter(lbl => !['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].includes(lbl)).map(lbl => (
-                                      <option key={lbl} value={lbl}>{lbl}</option>
-                                    ))}
-                                    <option value="__custom__">Custom label...</option>
-                                  </select>
-                                ) : (
-                                  <div 
-                                    className="flex items-center gap-1.5 group cursor-pointer" 
-                                    onClick={() => setEditingLogId(log.id)}
-                                    title="Click to correct label"
-                                  >
-                                    {getLabelBadge(log.target_label)}
-                                    <span className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] ml-1">✏️</span>
-                                  </div>
-                                )}
-                              </td>
-                              <td className="py-3 px-4 whitespace-nowrap font-mono font-medium">
-                                {log.confidence !== null ? (
-                                  <span className={log.confidence >= 0.8 ? "text-emerald-400" : log.confidence >= 0.65 ? "text-amber-400" : "text-red-400"}>
-                                    {(log.confidence * 100).toFixed(1)}%
+                            <Fragment key={log.id}>
+                              <tr
+                                onClick={(e) => {
+                                  const target = e.target as HTMLElement;
+                                  if (target.closest('select') || target.closest('button') || target.closest('.group.cursor-pointer')) return;
+                                  setExpandedLogId(expandedLogId === log.id ? null : log.id);
+                                }}
+                                className={`hover:bg-[#1C2538]/50 border-b border-[#1E293B] transition-colors cursor-pointer select-none ${expandedLogId === log.id ? 'bg-[#1D263B]/20' : ''}`}
+                              >
+                                <td className="py-3 px-4 whitespace-nowrap">
+                                  <span className="text-[10px] text-gray-500 mr-2 font-mono select-none">
+                                    {expandedLogId === log.id ? '▼' : '▶'}
                                   </span>
-                                ) : (
-                                  <span className="text-gray-500">—</span>
-                                )}
-                              </td>
-                              <td className="py-3 px-4 text-right whitespace-nowrap">
-                                {getMethodBadge(log.classification_method)}
-                              </td>
-                            </tr>
+                                  {getSourceBadge(log.source)}
+                                </td>
+                                <td className="py-3 px-4 font-mono text-gray-200 max-w-sm truncate" title="Click to view details">
+                                  {log.log_message}
+                                </td>
+                                <td className="py-3 px-4 whitespace-nowrap">
+                                  {editingLogId === log.id ? (
+                                    <select
+                                      defaultValue={log.target_label || ''}
+                                      onChange={(e) => handleSaveLabelCorrection(log.id, e.target.value)}
+                                      onBlur={() => setEditingLogId(null)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="bg-[#1C2538] text-xs text-white border border-[#2D3E5D] rounded px-2 py-1 focus:outline-none focus:border-blue-500"
+                                      autoFocus
+                                    >
+                                      <option value="" disabled>Select label...</option>
+                                      {['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].map(lbl => (
+                                        <option key={lbl} value={lbl}>{lbl}</option>
+                                      ))}
+                                      {uniqueLabels.filter(lbl => !['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].includes(lbl)).map(lbl => (
+                                        <option key={lbl} value={lbl}>{lbl}</option>
+                                      ))}
+                                      <option value="__custom__">Custom label...</option>
+                                    </select>
+                                  ) : (
+                                    <div 
+                                      className="flex items-center gap-1.5 group cursor-pointer" 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingLogId(log.id);
+                                      }}
+                                      title="Click to correct label"
+                                    >
+                                      {getLabelBadge(log.target_label)}
+                                      <span className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] ml-1">✏️</span>
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 whitespace-nowrap font-mono font-medium">
+                                  {log.confidence !== null ? (
+                                    <span className={log.confidence >= 0.8 ? "text-emerald-400" : log.confidence >= 0.65 ? "text-amber-400" : "text-red-400"}>
+                                      {(log.confidence * 100).toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-500">—</span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  {getMethodBadge(log.classification_method)}
+                                </td>
+                              </tr>
+                              {expandedLogId === log.id && (
+                                <tr className="bg-[#131926]/40">
+                                  <td colSpan={5} className="px-6 py-4 border-t border-[#1E293B]">
+                                    <div className="space-y-4 animate-fade-in text-xs">
+                                      <div className="flex flex-col md:flex-row justify-between items-start gap-4">
+                                        <div className="space-y-1.5 flex-1 w-full">
+                                          <span className="text-gray-500 font-semibold block uppercase text-[10px] tracking-wider">Full Log Message</span>
+                                          <div className="bg-[#070A13] border border-[#2D3E5D]/30 rounded-xl p-3 font-mono text-gray-200 break-all select-all whitespace-pre-wrap max-h-[160px] overflow-y-auto w-full leading-relaxed">
+                                            {log.log_message}
+                                          </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 md:grid-cols-1 gap-4 text-left md:text-right shrink-0 md:w-48">
+                                          <div>
+                                            <span className="text-gray-500 font-semibold block uppercase text-[10px] tracking-wider mb-1">Ingested At</span>
+                                            <span className="text-gray-350 font-mono">{new Date(log.created_at).toLocaleString()}</span>
+                                          </div>
+                                          <div>
+                                            <span className="text-gray-500 font-semibold block uppercase text-[10px] tracking-wider mb-1">Raw Confidence</span>
+                                            <span className="font-mono text-indigo-400 font-bold">{log.confidence !== null ? (log.confidence * 100).toFixed(4) + '%' : '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                      
+                                      <div className="flex flex-wrap items-center gap-6 pt-3 border-t border-[#1E293B]/60">
+                                        <div className="flex items-center gap-3">
+                                          <span className="text-gray-500 font-semibold uppercase text-[10px] tracking-wider">Human Correction Label:</span>
+                                          <select
+                                            value={log.target_label || ''}
+                                            onChange={(e) => handleSaveLabelCorrection(log.id, e.target.value)}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="bg-[#1C2538] text-xs text-white border border-[#2D3E5D] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-blue-500"
+                                          >
+                                            <option value="" disabled>Select label...</option>
+                                            {['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].map(lbl => (
+                                              <option key={lbl} value={lbl}>{lbl}</option>
+                                            ))}
+                                            {uniqueLabels.filter(lbl => !['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].includes(lbl)).map(lbl => (
+                                              <option key={lbl} value={lbl}>{lbl}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        {log.user_corrected && (
+                                          <span className="inline-flex items-center text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 font-bold uppercase tracking-wider">
+                                            ✓ Manually Corrected
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
                           ))}
                         </tbody>
                       </table>
@@ -1387,7 +1469,7 @@ export default function App() {
                     </div>
                     <span className="text-[10px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded font-mono uppercase tracking-wide animate-pulse">Live Stream</span>
                   </div>
-                  <div className="p-4 font-mono text-xs text-indigo-300/95 max-h-[200px] overflow-y-auto space-y-2 bg-[#090C16] h-[200px]">
+                  <div ref={terminalContainerRef} className="p-4 font-mono text-xs text-indigo-300/95 max-h-[200px] overflow-y-auto space-y-2 bg-[#090C16] h-[200px]">
                     {trainingLogs.length === 0 ? (
                       <div className="text-gray-500 italic">Console starting. Waiting for log output...</div>
                     ) : (
@@ -1398,7 +1480,6 @@ export default function App() {
                         </div>
                       ))
                     )}
-                    <div ref={terminalEndRef} />
                   </div>
                 </div>
               )}
@@ -1816,7 +1897,7 @@ export default function App() {
                     <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-mono uppercase tracking-wide animate-pulse">● Live</span>
                   )}
                 </div>
-                <div className="p-4 font-mono text-xs max-h-[240px] overflow-y-auto space-y-1.5 bg-[#090C16] min-h-[120px]">
+                <div ref={simulatorContainerRef} className="p-4 font-mono text-xs max-h-[240px] overflow-y-auto space-y-1.5 bg-[#090C16] min-h-[120px]">
                   {simulatorConsole.length === 0 ? (
                     <div className="text-gray-600 italic py-8 text-center">
                       {simulatorActive ? 'Initializing stream...' : 'Click "Start Stream" to begin generating synthetic production logs.'}
@@ -1837,7 +1918,6 @@ export default function App() {
                       </div>
                     ))
                   )}
-                  <div ref={simulatorConsoleEndRef} />
                 </div>
               </div>
             </div>
