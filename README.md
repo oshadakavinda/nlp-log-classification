@@ -1,6 +1,6 @@
 # 🛡️ Hybrid Log Classification & Real-Time Analytics Platform
 
-A production-ready, custom-trainable log classification platform. It leverages a **hybrid cascade pipeline (Regex + BERT ML Model + LLM)** to classify log streams with speed and high precision. Additionally, it offers **real-time model training with dynamic pseudo-labeling**, a **custom regex overrides manager**, and a **Recharts-powered system monitoring dashboard**.
+A production-ready, custom-trainable log classification platform. It leverages a **hybrid cascade pipeline (Regex + BERT ML Model + LLM)** to classify log streams with speed and high precision. Additionally, it offers **active human-in-the-loop corrections**, **closed-loop model retraining on database logs**, an **advanced model history registry**, and a **developer API integration helper**.
 
 ---
 
@@ -12,18 +12,28 @@ The backend routes incoming logs through a 3-stage intelligence cascade:
 - **Stage 2: BERT Embeddings + Logistic Regression**: Complex log patterns are encoded using `SentenceTransformer` (`all-MiniLM-L6-v2`) and classified via a custom-trained Logistic Regression model (equipped with `class_weight='balanced'` to prevent minority class bias).
 - **Stage 3: LLM (DeepSeek-R1 via Groq)**: Invoked as an intelligent fallback when training data is absent (e.g., for LegacyCRM logs) or classification certainty is low.
 
-### 2. Real-Time Model Training & Auto-Labeling
-- **Dynamic Pseudo-Labeling (Unlabeled Training Fallback)**: If you upload a training CSV missing a `target_label` column, the platform automatically activates the pipeline (Regex + ML + LLM) to label the raw logs on-the-fly and trains the model on these generated predictions.
-- **Interactive Training Console**: Watch live training logs stream directly from the Celery worker into the React frontend console emulator.
-- **Version Registry & Activation**: Maintain a history of model versions with validation metrics, and swap active classifiers instantly without server restarts.
+### 2. Active Learning & Human-in-the-Loop Corrections
+- **Interactive Label Override**: Users can correct model predictions directly from the logs dashboard table. 
+- **Log Expansion Panel**: Click any log row to slide open an accordion details view containing the full log message, raw confidence probability, ingestion timestamp, and an inline dropdown to assign a corrected label.
+- **Immediate Feedback**: Correcting a label instantly sets `user_corrected = True`, assigns `100%` confidence, flags the method as `"Manual override"`, and updates the dashboard charts in real-time.
 
-### 3. System Monitoring & Interactive Analytics
-- **Live Activity Feed**: Stream the 5 most recent log classifications in real-time.
-- **Visual Recharts Graphs**:
-  - **Classification Methods Ratio** (Doughnut chart displaying percentages of Regex vs ML vs LLM processing).
-  - **Log Categories Distribution** (Interactive Bar chart displaying frequency count of the top 8 labels).
-  - **Pipeline Performance Indicators** (Live progression bars tracking matching efficiency).
-- **System Health Checks**: Live status indicators for PostgreSQL, Redis, Celery Workers, and Groq API keys.
+### 3. Closed-Loop Training on Stored Database Logs
+- **No-CSV Retraining**: Train new classifiers directly from the logs stored in your database by clicking **"Retrain Model on Database Logs"**.
+- **Data Filtering**: The Celery task automatically extracts high-confidence logs (`confidence >= 0.8`) and user-corrected logs to construct a clean, high-quality training set, preventing the model from learning from prediction errors.
+- **Training Console Output**: Progress logs and metrics are piped in real-time into the scrolling console emulator in the frontend.
+
+### 4. Advanced Model Versioning & Registry
+- **Trained Model History**: Track all trained versions inside a history table showing accuracy, records count, and active status.
+- **Performance Inspection**: Click **"Inspect"** on any version to open a modal detailing the per-class precision, recall, and F1-score classification report.
+- **Model Purging**: Click **"Delete"** to permanently delete inactive model version weights from disk and remove their records from the DB.
+
+### 5. Developer Integration API Explorer
+- **Developer Panel**: Exposes copy-pasteable snippets for **cURL**, **Python (requests)**, and **Node.js (fetch)**.
+- **Ingestion API**: Exposes a `POST /api/logs/classify?save_to_db=true` endpoint that microservices can use to ingest and categorize logs on-the-fly.
+
+### 6. Live Log Simulator & Source Heuristic Inference
+- **Log Stream Simulator**: Generate synthetic production logs at adjustable speeds (from 500ms to 3s) using a toggle switch in the **System Monitoring** dashboard.
+- **Source Inference Heuristics**: Logs classified without a source are run through a heuristic pattern engine that assigns specific service names (like `DatabasePool`, `SecurityMonitor`, `AuthService`, `PaymentGateway`, etc.) based on log content keywords.
 
 ---
 
@@ -143,6 +153,7 @@ To run services individually without Docker:
 
 ### 1. Ingestion & Analysis (Logs Analytics Tab)
 - **Log Ingestion**: Drag and drop any log CSV file. The CSV only requires `source` and `log_message` columns (order does not matter, and common aliases like `message`, `msg`, `system`, or `app` are resolved dynamically).
+- **Expandable Detail Accordion**: Click on any log row to slide open a detail pane showing the full, un-truncated message, creation timestamp, raw confidence probability, and human correction label select box.
 - **Search & Filters**: Instantly query logs by message or source, or filter them by label or classification method.
 
 ### 2. Custom Overrides (Model Training Tab)
@@ -152,6 +163,7 @@ To run services individually without Docker:
 ### 3. Model Training & Pseudo-Labeling
 - **Supervised Training**: Upload a labeled CSV (containing `log_message` and `target_label`) to train the model.
 - **Pseudo-Labeled (Raw) Training**: Upload a raw log CSV (containing only `log_message` and `source`). The system automatically uses the current active pipeline to label the logs and fits the model.
+- **Database Retraining**: Click the **"Retrain Model on Database Logs"** button under the Model Training tab to fit a new Logistic Regression classifier directly on logs collected in the database.
 - **Version Switcher**: View accuracy, precision, and recall metrics in the training report and click **Activate** on any history entry to instantly roll back or promote a model version.
 
 ### 4. API Integration
@@ -169,7 +181,7 @@ For direct program integrations, query the production classification endpoint:
   [
     { "log_message": "User 12345 logged in.", "source": "BillingSystem" },
     { "log_message": "Backup completed successfully.", "source": "AnalyticsEngine" }
-  ]
+  }
   ```
 - **Response Format**:
   ```json
