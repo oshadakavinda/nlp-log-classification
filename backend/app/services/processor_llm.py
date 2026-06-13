@@ -20,20 +20,24 @@ def classify_with_llm(log_msg):
     Put the category inside <category> </category> tags. 
     Log message: {log_msg}'''
 
-    chat_completion = groq.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        # model="llama-3.3-70b-versatile",
-        model="deepseek-r1-distill-llama-70b",
-        temperature=0.5
-    )
+    try:
+        chat_completion = groq.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            # model="llama-3.3-70b-versatile",
+            model="deepseek-r1-distill-llama-70b",
+            temperature=0.5
+        )
 
-    content = chat_completion.choices[0].message.content
-    match = re.search(r'<category>(.*)<\/category>', content, flags=re.DOTALL)
-    category = "Unclassified"
-    if match:
-        category = match.group(1)
+        content = chat_completion.choices[0].message.content
+        match = re.search(r'<category>(.*)<\/category>', content, flags=re.DOTALL)
+        category = "Unclassified"
+        if match:
+            category = match.group(1)
 
-    return category
+        return category
+    except Exception as e:
+        print(f"Error during LLM classification: {e}")
+        return "Unclassified"
 
 
 if __name__ == "__main__":

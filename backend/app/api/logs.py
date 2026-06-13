@@ -2,7 +2,7 @@ import os
 import shutil
 import json
 from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete
 from typing import List
 from app.worker import process_csv_task, redis_client
 from app.database import get_session
@@ -12,7 +12,7 @@ import asyncio
 
 router = APIRouter()
 
-UPLOAD_DIR = "/tmp/uploads"
+UPLOAD_DIR = "/app/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload")
@@ -27,10 +27,16 @@ async def upload_logs(file: UploadFile = File(...)):
     task = process_csv_task.delay(file_path)
     return {"job_id": task.id, "message": "CSV upload processing started."}
 
-@router.get("/logs", response_model=List[LogEntry])
+@router.get("", response_model=List[LogEntry])
 def get_logs(session: Session = Depends(get_session), limit: int = 100, offset: int = 0):
     logs = session.exec(select(LogEntry).offset(offset).limit(limit)).all()
     return logs
+
+@router.delete("")
+def delete_logs(session: Session = Depends(get_session)):
+    session.exec(delete(LogEntry))
+    session.commit()
+    return {"message": "All logs deleted successfully"}
 
 @router.websocket("/ws/progress/{job_id}")
 async def websocket_progress(websocket: WebSocket, job_id: str):

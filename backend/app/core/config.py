@@ -4,7 +4,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Hybrid Log Classification API"
     
     # Database Config
-    DATABASE_URL: str = "postgresql://user:password@postgres:5432/logsdb"
+    DATABASE_URL: str = "sqlite:///./logs.db"
     
     # Redis & Celery Config
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
