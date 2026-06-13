@@ -7,7 +7,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSo
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select, delete
-from app.worker import process_csv_task, train_model_task, redis_client, celery_app
+from app.worker import process_csv_task, train_model_task, train_from_db_task, redis_client, celery_app
 from app.database import get_session
 from app.models.log import LogEntry
 from app.models.model_version import ModelVersion
@@ -36,6 +36,24 @@ class LogClassifyResponse(BaseModel):
     confidence: float
 
 
+class LogsResponse(BaseModel):
+    total: int
+    logs: List[LogEntry]
+
+
+class LogStatsResponse(BaseModel):
+    total: int
+    regex: int
+    ml: int
+    llm: int
+    label_distribution: List[dict]
+    unique_labels: List[str]
+
+
+class LabelCorrectionRequest(BaseModel):
+    corrected_label: str
+
+
 @router.post("/upload")
 async def upload_logs(file: UploadFile = File(...)):
     if not file.filename.endswith('.csv'):
@@ -49,11 +67,102 @@ async def upload_logs(file: UploadFile = File(...)):
     return {"job_id": task.id, "message": "CSV upload processing started."}
 
 
-@router.get("", response_model=List[LogEntry])
-def get_logs(session: Session = Depends(get_session), limit: int = 500, offset: int = 0):
+@router.get("", response_model=LogsResponse)
+def get_logs(
+    session: Session = Depends(get_session),
+    search: Optional[str] = None,
+    method: Optional[str] = None,
+    label: Optional[str] = None
+):
     session.expire_all()
-    logs = session.exec(select(LogEntry).order_by(LogEntry.created_at.desc()).offset(offset).limit(limit)).all()
-    return logs
+    from sqlmodel import func
+    
+    # Build query filters
+    filters = []
+    if search:
+        search_filter = f"%{search}%"
+        filters.append(
+            (LogEntry.log_message.like(search_filter)) |
+            (LogEntry.source.like(search_filter))
+        )
+    if method and method != "all":
+        filters.append(LogEntry.classification_method == method)
+    if label and label != "all":
+        filters.append(LogEntry.target_label == label)
+        
+    # Get total matching count
+    count_stmt = select(func.count(LogEntry.id))
+    for f in filters:
+        count_stmt = count_stmt.where(f)
+    total = session.exec(count_stmt).one() or 0
+    
+    # Get all matching logs (no limit)
+    logs_stmt = select(LogEntry).order_by(LogEntry.created_at.desc())
+    for f in filters:
+        logs_stmt = logs_stmt.where(f)
+    logs = session.exec(logs_stmt).all()
+    
+    return {"total": total, "logs": logs}
+
+
+@router.get("/stats", response_model=LogStatsResponse)
+def get_log_stats(session: Session = Depends(get_session)):
+    from sqlmodel import func
+    
+    total = session.exec(select(func.count(LogEntry.id))).one() or 0
+    regex_count = session.exec(select(func.count(LogEntry.id)).where(LogEntry.classification_method == "Regex")).one() or 0
+    ml_count = session.exec(select(func.count(LogEntry.id)).where(LogEntry.classification_method == "ML")).one() or 0
+    llm_count = session.exec(select(func.count(LogEntry.id)).where(LogEntry.classification_method == "LLM")).one() or 0
+    
+    # Label distribution (top 8 labels)
+    label_counts = session.exec(
+        select(LogEntry.target_label, func.count(LogEntry.id))
+        .where(LogEntry.target_label != None)
+        .group_by(LogEntry.target_label)
+        .order_by(func.count(LogEntry.id).desc())
+        .limit(8)
+    ).all()
+    
+    label_distribution = [{"name": row[0], "count": row[1]} for row in label_counts if row[0]]
+    
+    # Unique labels list (for filter dropdown)
+    unique_labels_raw = session.exec(
+        select(LogEntry.target_label)
+        .distinct()
+        .where(LogEntry.target_label != None)
+    ).all()
+    unique_labels = [lbl for lbl in unique_labels_raw if lbl]
+    
+    return {
+        "total": total,
+        "regex": regex_count,
+        "ml": ml_count,
+        "llm": llm_count,
+        "label_distribution": label_distribution,
+        "unique_labels": unique_labels
+    }
+
+
+@router.patch("/{log_id}/correct")
+def correct_log_label(log_id: int, payload: LabelCorrectionRequest, session: Session = Depends(get_session)):
+    entry = session.get(LogEntry, log_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Log entry not found.")
+    
+    entry.target_label = payload.corrected_label
+    entry.classification_method = "Manual override"
+    entry.confidence = 1.0
+    entry.user_corrected = True
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+
+@router.post("/train/db")
+def train_model_from_db():
+    task = train_from_db_task.delay()
+    return {"job_id": task.id, "message": "Database model training task started."}
 
 
 @router.delete("")
@@ -158,6 +267,34 @@ def activate_model_version(version_id: int, session: Session = Depends(get_sessi
     session.commit()
     
     return {"status": "success", "message": f"Successfully activated model version {mv.version_tag}."}
+
+
+@router.delete("/model-versions/{version_id}")
+def delete_model_version(version_id: int, session: Session = Depends(get_session)):
+    mv = session.get(ModelVersion, version_id)
+    if not mv:
+        raise HTTPException(status_code=404, detail="Model version not found.")
+    
+    if mv.is_active:
+        raise HTTPException(status_code=400, detail="Cannot delete the currently active model version.")
+    
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    model_path = os.path.join(backend_dir, f"models/versions/{mv.version_tag}.joblib")
+    meta_path = os.path.join(backend_dir, f"models/versions/{mv.version_tag}_metadata.json")
+    
+    # Remove files if they exist
+    try:
+        if os.path.exists(model_path):
+            os.remove(model_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+    except Exception as e:
+        # Log error but proceed to delete DB record so DB stays in sync
+        print(f"Error removing model files: {e}")
+        
+    session.delete(mv)
+    session.commit()
+    return {"status": "success", "message": f"Successfully deleted model version {mv.version_tag}."}
 
 
 @router.get("/active-model")

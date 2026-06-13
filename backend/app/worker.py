@@ -392,3 +392,179 @@ def train_model_task(self, file_path: str, dataset_name: str):
                 log_msg(f"Warning: Failed to delete temp file {file_path}: {ex}")
                 
     return {"status": "completed", "version_tag": version_tag, "accuracy": accuracy}
+
+
+@celery_app.task(bind=True)
+def train_from_db_task(self):
+    job_id = self.request.id
+    redis_key = f"job_progress_{job_id}"
+    log_key = f"job_logs_{job_id}"
+    
+    # Delete any stale logs for this job
+    redis_client.delete(log_key)
+    
+    def log_msg(msg):
+        print(f"[Train DB Job {job_id}] {msg}")
+        log_data = json.dumps({"timestamp": datetime.utcnow().isoformat(), "message": msg})
+        redis_client.rpush(log_key, log_data)
+        redis_client.ltrim(log_key, -1000, -1)
+        
+    try:
+        log_msg(f"Starting model training from database logs: {job_id}")
+        redis_client.set(redis_key, json.dumps({"processed": 0, "total": 100, "status": "processing", "message": "Fetching database logs..."}))
+        
+        # Fetch high-confidence logs or manually corrected logs from database
+        with Session(engine) as session:
+            db_logs = session.exec(
+                select(LogEntry).where(
+                    (LogEntry.user_corrected == True) | (LogEntry.confidence >= 0.8)
+                )
+            ).all()
+            
+        log_msg(f"Retrieved {len(db_logs)} high-confidence or user-corrected logs from database.")
+        
+        valid_logs = []
+        valid_labels = []
+        for entry in db_logs:
+            if entry.log_message and entry.target_label:
+                valid_logs.append(entry.log_message)
+                valid_labels.append(entry.target_label)
+                
+        num_records = len(valid_logs)
+        log_msg(f"Prepared dataset: {num_records} valid training examples.")
+        
+        if num_records < 10:
+            error_msg = f"Insufficient training data in DB. Need at least 10 high-confidence logs, found {num_records}."
+            log_msg(f"ERROR: {error_msg}")
+            redis_client.set(redis_key, json.dumps({
+                "processed": 0, "total": 100, "status": "completed", 
+                "error": error_msg
+            }))
+            return {"status": "error", "error": error_msg}
+            
+        # 1. Encoding
+        log_msg("Encoding log messages using SentenceTransformer (all-MiniLM-L6-v2)...")
+        redis_client.set(redis_key, json.dumps({"processed": 10, "total": 100, "status": "processing", "message": "Encoding log messages using BERT..."}))
+        
+        embeddings = []
+        batch_size = 128
+        for i in range(0, num_records, batch_size):
+            batch = valid_logs[i:i+batch_size]
+            batch_embeddings = model_embedding.encode(batch)
+            embeddings.extend(batch_embeddings)
+            prog_pct = min(60, 10 + int((len(embeddings) / num_records) * 50))
+            redis_client.set(redis_key, json.dumps({
+                "processed": prog_pct, "total": 100, "status": "processing", 
+                "message": f"Encoding log messages: {len(embeddings)}/{num_records}"
+            }))
+            
+        log_msg("Sentence embeddings successfully generated.")
+        
+        # 2. Train/Test Split & Validation
+        import numpy as np
+        X = np.array(embeddings)
+        y = np.array(valid_labels)
+        
+        log_msg("Splitting dataset into 70% train and 30% test...")
+        redis_client.set(redis_key, json.dumps({"processed": 65, "total": 100, "status": "processing", "message": "Splitting data & validating model..."}))
+        
+        test_size = 0.3 if num_records >= 10 else 0.1
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+        
+        log_msg(f"Train set: {len(X_train)} samples. Test set: {len(X_test)} samples.")
+        log_msg("Fitting Logistic Regression model (validation phase)...")
+        
+        val_clf = LogisticRegression(max_iter=1000, class_weight='balanced')
+        val_clf.fit(X_train, y_train)
+        y_pred = val_clf.predict(X_test)
+        
+        accuracy = float(accuracy_score(y_test, y_pred))
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        log_msg(f"Validation Accuracy: {accuracy:.4f}")
+        log_msg("Detailed Validation Report:")
+        for label, metrics in report.items():
+            if isinstance(metrics, dict):
+                log_msg(f"  Class '{label}': precision={metrics.get('precision', 0):.2f}, recall={metrics.get('recall', 0):.2f}, f1-score={metrics.get('f1-score', 0):.2f}")
+                
+        # 3. Fit Final Model on 100% of data
+        log_msg("Training final Logistic Regression model on full dataset...")
+        redis_client.set(redis_key, json.dumps({"processed": 80, "total": 100, "status": "processing", "message": "Training final model..."}))
+        
+        final_clf = LogisticRegression(max_iter=1000, class_weight='balanced')
+        final_clf.fit(X, y)
+        
+        # 4. Save Versioned Model and Metadata
+        log_msg("Saving model weights and version metadata...")
+        redis_client.set(redis_key, json.dumps({"processed": 90, "total": 100, "status": "processing", "message": "Saving versioned model..."}))
+        
+        version_tag = f"v_db_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        versions_dir = os.path.join(backend_dir, "models/versions")
+        os.makedirs(versions_dir, exist_ok=True)
+        
+        model_path = os.path.join(versions_dir, f"{version_tag}.joblib")
+        meta_path = os.path.join(versions_dir, f"{version_tag}_metadata.json")
+        
+        joblib.dump(final_clf, model_path)
+        
+        # Format metadata
+        metadata = {
+            "version_tag": version_tag,
+            "created_at": datetime.utcnow().isoformat(),
+            "dataset_name": f"DB Logs ({num_records} records)",
+            "num_records": num_records,
+            "accuracy": accuracy,
+            "classes": list(final_clf.classes_),
+            "report": report
+        }
+        with open(meta_path, "w") as mf:
+            json.dump(metadata, mf)
+            
+        log_msg(f"Saved versioned model to {model_path}")
+        
+        # 5. DB update & Auto-activation
+        log_msg("Persisting model version and activating it...")
+        redis_client.set(redis_key, json.dumps({"processed": 95, "total": 100, "status": "processing", "message": "Activating new model..."}))
+        
+        # Copy to active paths
+        active_model_path = os.path.join(backend_dir, "models/log_classifier.joblib")
+        active_meta_path = os.path.join(backend_dir, "models/log_classifier_metadata.json")
+        
+        shutil.copy2(model_path, active_model_path)
+        shutil.copy2(meta_path, active_meta_path)
+        
+        with Session(engine) as session:
+            # Set other versions inactive
+            stmt = select(ModelVersion).where(ModelVersion.is_active == True)
+            active_versions = session.exec(stmt).all()
+            for av in active_versions:
+                av.is_active = False
+                session.add(av)
+                
+            # Add new active version
+            mv = ModelVersion(
+                version_tag=version_tag,
+                dataset_name=f"Database Logs",
+                num_records=num_records,
+                accuracy=accuracy,
+                metrics_json=json.dumps(report),
+                is_active=True
+            )
+            session.add(mv)
+            session.commit()
+            
+        log_msg("Model version successfully activated and saved in DB.")
+        redis_client.set(redis_key, json.dumps({"processed": 100, "total": 100, "status": "completed", "message": "Model training completed successfully!"}))
+        
+    except Exception as e:
+        import traceback
+        err_tb = traceback.format_exc()
+        log_msg(f"CRITICAL ERROR during DB training:\n{err_tb}")
+        redis_client.set(redis_key, json.dumps({
+            "processed": 100, "total": 100, "status": "completed", 
+            "error": str(e)
+        }))
+        return {"status": "error", "error": str(e)}
+        
+    return {"status": "completed", "version_tag": version_tag, "accuracy": accuracy}

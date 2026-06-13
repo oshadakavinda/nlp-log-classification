@@ -9,4 +9,5 @@ class LogEntry(SQLModel, table=True):
     target_label: Optional[str] = None
     classification_method: Optional[str] = None
     confidence: Optional[float] = None
+    user_corrected: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)

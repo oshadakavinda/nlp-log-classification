@@ -1,14 +1,14 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { 
-  UploadCloud, 
-  FileText, 
-  CheckCircle, 
-  Search, 
-  Filter, 
-  Cpu, 
-  Zap, 
-  Database, 
+import {
+  UploadCloud,
+  FileText,
+  CheckCircle,
+  Search,
+  Filter,
+  Cpu,
+  Zap,
+  Database,
   Trash2,
   Server,
   Activity,
@@ -24,18 +24,18 @@ import {
   Radio
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell, 
-  Tooltip, 
-  Legend, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid 
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  Legend,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid
 } from 'recharts';
 
 interface LogEntry {
@@ -46,6 +46,21 @@ interface LogEntry {
   classification_method: string | null;
   confidence: number | null;
   created_at: string;
+  user_corrected?: boolean;
+}
+
+interface LogsResponse {
+  total: number;
+  logs: LogEntry[];
+}
+
+interface LogStats {
+  total: number;
+  regex: number;
+  ml: number;
+  llm: number;
+  label_distribution: Array<{ name: string; count: number }>;
+  unique_labels: string[];
 }
 
 interface JobProgress {
@@ -95,34 +110,39 @@ interface ActiveModel {
 
 export default function App() {
   const queryClient = useQueryClient();
-  
+
   // Navigation tabs: 'analytics' | 'training' | 'monitoring'
   const [activeTab, setActiveTab] = useState<'analytics' | 'training' | 'monitoring'>('analytics');
-  
+
   const uploadWsRef = useRef<WebSocket | null>(null);
   const trainWsRef = useRef<WebSocket | null>(null);
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
-  
+
   // Upload Job State
   const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<JobProgress>({ processed: 0, total: 1, status: '' });
-  
+
   // Model Training Job State
   const [trainJobId, setTrainJobId] = useState<string | null>(null);
   const [trainProgress, setTrainProgress] = useState<JobProgress>({ processed: 0, total: 100, status: '' });
   const [trainingLogs, setTrainingLogs] = useState<Array<{ timestamp: string; message: string }>>([]);
   const [isTraining, setIsTraining] = useState(false);
-  
+
   // Custom Regex Rule Form State
   const [newPattern, setNewPattern] = useState('');
   const [newTargetLabel, setNewTargetLabel] = useState('');
   const [isAddingRule, setIsAddingRule] = useState(false);
-  
+
+  // Correction and Inspection states
+  const [editingLogId, setEditingLogId] = useState<number | null>(null);
+  const [inspectingVersion, setInspectingVersion] = useState<ModelVersion | null>(null);
+  const [devTab, setDevTab] = useState<'curl' | 'python' | 'node'>('curl');
+
   // Search & Filter State
   const [searchTerm, setSearchTerm] = useState('');
   const [methodFilter, setMethodFilter] = useState('all');
   const [labelFilter, setLabelFilter] = useState('all');
-  
+
   // Live Activity Monitoring Feed State
   const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
 
@@ -135,11 +155,29 @@ export default function App() {
   const simulatorIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // API Queries
-  const { data: logs = [], refetch: refetchLogs } = useQuery<LogEntry[]>({
-    queryKey: ['logs'],
+  const { data: logsData = { total: 0, logs: [] }, refetch: refetchLogs } = useQuery<LogsResponse>({
+    queryKey: ['logs', searchTerm, methodFilter, labelFilter],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/logs?limit=500');
+      const params = new URLSearchParams();
+      if (searchTerm) params.append('search', searchTerm);
+      if (methodFilter !== 'all') params.append('method', methodFilter);
+      if (labelFilter !== 'all') params.append('label', labelFilter);
+
+      const response = await fetch(`http://localhost:8000/api/logs?${params.toString()}`);
       if (!response.ok) throw new Error('Failed to fetch logs');
+      return response.json();
+    },
+    staleTime: 5000,
+  });
+
+  const logs = logsData.logs;
+  const totalMatchingLogsCount = logsData.total;
+
+  const { data: logStats = { total: 0, regex: 0, ml: 0, llm: 0, label_distribution: [], unique_labels: [] }, refetch: refetchStats } = useQuery<LogStats>({
+    queryKey: ['logStats'],
+    queryFn: async () => {
+      const response = await fetch('http://localhost:8000/api/logs/stats');
+      if (!response.ok) throw new Error('Failed to fetch log stats');
       return response.json();
     },
     staleTime: 5000,
@@ -232,7 +270,7 @@ export default function App() {
     return template
       .replace('{id}', String(Math.floor(Math.random() * 9999) + 1))
       .replace('{rt}', String(Math.floor(Math.random() * 450) + 10))
-      .replace('{ip}', `${Math.floor(Math.random()*223)+1}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`)
+      .replace('{ip}', `${Math.floor(Math.random() * 223) + 1}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`)
       .replace('{conns}', String(Math.floor(Math.random() * 90) + 5))
       .replace('{txnid}', Math.random().toString(36).substring(2, 10))
       .replace('{fid}', String(Math.floor(Math.random() * 9999)))
@@ -274,10 +312,11 @@ export default function App() {
           ]);
           setSimulatorLogsGenerated(prev => prev + 1);
           localCounter++;
-          
+
           // Invalidate queries every 5 logs to update charts
           if (localCounter % 5 === 0) {
             queryClient.invalidateQueries({ queryKey: ['logs'] });
+            queryClient.invalidateQueries({ queryKey: ['logStats'] });
           }
         }
       } catch (err) {
@@ -312,6 +351,7 @@ export default function App() {
       setSimulatorActive(false);
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ['logs'] });
+        queryClient.invalidateQueries({ queryKey: ['logStats'] });
       }, 500);
     } else {
       setSimulatorConsole([]);
@@ -330,8 +370,10 @@ export default function App() {
         method: 'DELETE',
       });
       if (!response.ok) throw new Error('Failed to clear logs');
-      queryClient.setQueryData(['logs'], []);
+      queryClient.setQueryData(['logs'], { total: 0, logs: [] });
+      queryClient.setQueryData(['logStats'], { total: 0, regex: 0, ml: 0, llm: 0, label_distribution: [], unique_labels: [] });
       refetchLogs();
+      refetchStats();
     } catch (err) {
       console.error(err);
       alert("Failed to clear logs.");
@@ -355,7 +397,7 @@ export default function App() {
       const data = await response.json();
       setUploadJobId(data.job_id);
       setUploadProgress({ processed: 0, total: 1, status: 'processing' });
-      
+
       if (uploadWsRef.current) {
         uploadWsRef.current.close();
       }
@@ -370,6 +412,7 @@ export default function App() {
           uploadWsRef.current = null;
           setTimeout(() => {
             refetchLogs();
+            refetchStats();
           }, 1000);
         }
       };
@@ -402,14 +445,14 @@ export default function App() {
       const data = await response.json();
       setTrainJobId(data.job_id);
       setTrainProgress({ processed: 0, total: 100, status: 'processing', message: 'Reading dataset...' });
-      
+
       if (trainWsRef.current) {
         trainWsRef.current.close();
       }
 
       const ws = new WebSocket(`ws://localhost:8000/api/logs/ws/progress/${data.job_id}`);
       trainWsRef.current = ws;
-      
+
       const pollLogs = async () => {
         try {
           const res = await fetch(`http://localhost:8000/api/logs/train/logs/${data.job_id}`);
@@ -427,7 +470,7 @@ export default function App() {
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         setTrainProgress(msg);
-        
+
         if (msg.status === 'completed') {
           clearInterval(logInterval);
           ws.close();
@@ -462,9 +505,28 @@ export default function App() {
       refetchActiveModel();
       refetchModelVersions();
       refetchLogs();
+      refetchStats();
     } catch (err) {
       console.error(err);
       alert("Failed to activate model version.");
+    }
+  };
+
+  // Delete model version
+  const handleDeleteModelVersion = async (versionId: number) => {
+    if (!window.confirm("Are you sure you want to delete this model version? This will remove it from the database and delete its files from disk.")) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/logs/model-versions/${versionId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || "Failed to delete model version");
+      }
+      refetchModelVersions();
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Failed to delete model version.");
     }
   };
 
@@ -513,12 +575,119 @@ export default function App() {
     window.open('http://localhost:8000/api/logs/download-dataset', '_blank');
   };
 
+  const handleSaveLabelCorrection = async (logId: number, label: string) => {
+    let finalLabel = label;
+    if (label === '__custom__') {
+      const customVal = window.prompt("Enter custom label name:");
+      if (!customVal || !customVal.trim()) {
+        setEditingLogId(null);
+        return;
+      }
+      finalLabel = customVal.trim();
+    }
+    
+    try {
+      const res = await fetch(`http://localhost:8000/api/logs/${logId}/correct`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ corrected_label: finalLabel })
+      });
+      if (!res.ok) throw new Error("Failed to correct label");
+      refetchLogs();
+      refetchStats();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to correct label.");
+    } finally {
+      setEditingLogId(null);
+    }
+  };
+
+  const handleTrainFromDB = async () => {
+    setIsTraining(true);
+    setTrainingLogs([]);
+    try {
+      const response = await fetch('http://localhost:8000/api/logs/train/db', {
+        method: 'POST'
+      });
+      if (!response.ok) throw new Error('Database training trigger failed');
+      const data = await response.json();
+      setTrainJobId(data.job_id);
+      setTrainProgress({ processed: 0, total: 100, status: 'processing', message: 'Fetching DB logs...' });
+
+      if (trainWsRef.current) {
+        trainWsRef.current.close();
+      }
+
+      const ws = new WebSocket(`ws://localhost:8000/api/logs/ws/progress/${data.job_id}`);
+      trainWsRef.current = ws;
+
+      const pollLogs = async () => {
+        try {
+          const res = await fetch(`http://localhost:8000/api/logs/train/logs/${data.job_id}`);
+          if (res.ok) {
+            const logsData = await res.json();
+            setTrainingLogs(logsData);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      const logInterval = setInterval(pollLogs, 1500);
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        setTrainProgress(msg);
+
+        if (msg.status === 'completed') {
+          clearInterval(logInterval);
+          ws.close();
+          trainWsRef.current = null;
+          setIsTraining(false);
+          setTimeout(() => {
+            refetchActiveModel();
+            refetchModelVersions();
+            refetchLogs();
+            refetchStats();
+          }, 1500);
+          pollLogs();
+        }
+      };
+    } catch (err) {
+      console.error(err);
+      setIsTraining(false);
+    }
+  };
+
+  const dbTrainingEligibleCount = useMemo(() => {
+    return logs.filter(l => l.user_corrected || (l.confidence !== null && l.confidence >= 0.8)).length;
+  }, [logs]);
+
+  const inspectReportData = useMemo(() => {
+    if (!inspectingVersion || !inspectingVersion.metrics_json) return [];
+    try {
+      const parsed = JSON.parse(inspectingVersion.metrics_json);
+      return Object.keys(parsed)
+        .filter(key => key !== 'accuracy' && key !== 'macro avg' && key !== 'weighted avg')
+        .map(className => ({
+          name: className,
+          precision: parsed[className].precision,
+          recall: parsed[className].recall,
+          f1Score: parsed[className]['f1-score'],
+          support: parsed[className].support,
+        }));
+    } catch (e) {
+      return [];
+    }
+  }, [inspectingVersion]);
+
   // Dynamic stats computations
   const stats = useMemo(() => {
-    const total = logs.length;
-    const regexCount = logs.filter(l => l.classification_method === 'Regex').length;
-    const mlCount = logs.filter(l => l.classification_method === 'ML').length;
-    const llmCount = logs.filter(l => l.classification_method === 'LLM').length;
+    const total = logStats.total;
+    const regexCount = logStats.regex;
+    const mlCount = logStats.ml;
+    const llmCount = logStats.llm;
 
     const regexPercent = total > 0 ? Math.round((regexCount / total) * 100) : 0;
     const mlPercent = total > 0 ? Math.round((mlCount / total) * 100) : 0;
@@ -531,61 +700,29 @@ export default function App() {
       llm: { count: llmCount, percent: llmPercent },
       complex: { count: mlCount + llmCount, percent: mlPercent + llmPercent }
     };
-  }, [logs]);
+  }, [logStats]);
 
   // Chart data formatting
   const methodChartData = useMemo(() => {
     return [
-      { name: 'Regex', value: stats.regex.count, color: '#3B82F6' },
-      { name: 'ML Model', value: stats.ml.count, color: '#6366F1' },
-      { name: 'LLM Fallback', value: stats.llm.count, color: '#8B5CF6' }
+      { name: 'Regex', value: logStats.regex, color: '#3B82F6' },
+      { name: 'ML Model', value: logStats.ml, color: '#6366F1' },
+      { name: 'LLM Fallback', value: logStats.llm, color: '#8B5CF6' }
     ].filter(d => d.value > 0);
-  }, [stats]);
+  }, [logStats]);
 
-  const labelChartData = useMemo(() => {
-    const counts: Record<string, number> = {};
-    logs.forEach(l => {
-      const label = l.target_label || 'Unclassified';
-      counts[label] = (counts[label] || 0) + 1;
-    });
-    return Object.keys(counts).map(name => ({
-      name,
-      count: counts[name]
-    })).sort((a, b) => b.count - a.count).slice(0, 8); // Top 8 classes
-  }, [logs]);
+  const labelChartData = logStats.label_distribution;
 
   // Unique labels list
-  const uniqueLabels = useMemo(() => {
-    const labels = new Set<string>();
-    logs.forEach(l => {
-      if (l.target_label) labels.add(l.target_label);
-    });
-    return Array.from(labels);
-  }, [logs]);
+  const uniqueLabels = logStats.unique_labels;
 
-  // Filter logs logic
-  const filteredLogs = useMemo(() => {
-    return logs.filter(log => {
-      const matchesSearch = 
-        log.log_message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        log.source.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      const matchesMethod = 
-        methodFilter === 'all' || 
-        log.classification_method === methodFilter;
-
-      const matchesLabel = 
-        labelFilter === 'all' || 
-        log.target_label === labelFilter;
-
-      return matchesSearch && matchesMethod && matchesLabel;
-    });
-  }, [logs, searchTerm, methodFilter, labelFilter]);
+  // Filter logs logic (now managed by backend)
+  const filteredLogs = logs;
 
   // Styling helper for classification method badge
   const getMethodBadge = (method: string | null) => {
     if (!method) return null;
-    switch(method) {
+    switch (method) {
       case 'Regex':
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
@@ -616,7 +753,7 @@ export default function App() {
   const getSourceBadge = (source: string) => {
     let colorClasses = "bg-gray-500/10 text-gray-400 border-gray-500/20";
     const cleanSource = source.trim();
-    switch(cleanSource) {
+    switch (cleanSource) {
       case 'LegacyCRM':
         colorClasses = "bg-amber-500/10 text-amber-400 border-amber-500/20";
         break;
@@ -676,7 +813,7 @@ export default function App() {
   const getLabelBadge = (label: string | null) => {
     if (!label) return <span className="text-gray-600">—</span>;
     let colorClasses = "bg-gray-500/10 text-gray-400 border-gray-500/20";
-    
+
     const lower = label.toLowerCase();
     if (lower.includes('error') || lower.includes('fail') || lower.includes('crash')) {
       colorClasses = "bg-red-500/10 text-red-400 border-red-500/20";
@@ -698,7 +835,7 @@ export default function App() {
   // Evaluation classification report format converter
   const classReport = useMemo(() => {
     if (!activeModel || !activeModel.report) return [];
-    
+
     return Object.keys(activeModel.report)
       .filter(key => key !== 'accuracy' && key !== 'macro avg' && key !== 'weighted avg')
       .map(className => ({
@@ -718,7 +855,7 @@ export default function App() {
       <div className="absolute bottom-[10%] left-1/3 w-[450px] h-[450px] glow-pink rounded-full filter blur-[110px] pointer-events-none -z-10 animate-pulse-subtle" />
 
       <div className="max-w-6xl mx-auto space-y-8">
-        
+
         {/* Header Section */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-gray-800 gap-4">
           <div>
@@ -730,36 +867,33 @@ export default function App() {
             </div>
             <p className="text-gray-400 mt-1">Hybrid Log Classification & Real-Time Training Pipeline</p>
           </div>
-          
+
           {/* Navigation Controls */}
           <div className="flex glass-card p-1 rounded-xl shadow-inner select-none animate-fade-in">
-            <button 
+            <button
               onClick={() => setActiveTab('analytics')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
-                activeTab === 'analytics' 
-                  ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md scale-[1.02]' 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeTab === 'analytics'
+                  ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md scale-[1.02]'
                   : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
-              }`}
+                }`}
             >
               <Layers size={15} /> Logs Analytics
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('training')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
-                activeTab === 'training' 
-                  ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md scale-[1.02]' 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeTab === 'training'
+                  ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md scale-[1.02]'
                   : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
-              }`}
+                }`}
             >
               <Terminal size={15} /> Model Training
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('monitoring')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
-                activeTab === 'monitoring' 
-                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-md scale-[1.02]' 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeTab === 'monitoring'
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-md scale-[1.02]'
                   : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
-              }`}
+                }`}
             >
               <Activity size={15} /> System Monitoring
             </button>
@@ -772,39 +906,39 @@ export default function App() {
             {/* Metric Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
-                 <div className="p-3 bg-blue-500/10 text-blue-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                    <FileText size={28} />
-                 </div>
-                 <div>
-                   <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Stored Logs</p>
-                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">{stats.total.toLocaleString()}</h3>
-                 </div>
-              </div>
-              
-              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
-                 <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                    <Cpu size={28} />
-                 </div>
-                 <div>
-                   <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">ML & LLM Processed</p>
-                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
-                     {stats.complex.count.toLocaleString()}
-                     <span className="text-sm font-normal text-indigo-400 ml-2">({stats.complex.percent}%)</span>
-                   </h3>
-                 </div>
+                <div className="p-3 bg-blue-500/10 text-blue-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <FileText size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Stored Logs</p>
+                  <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">{stats.total.toLocaleString()}</h3>
+                </div>
               </div>
 
               <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
-                 <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                    <Zap size={28} />
-                 </div>
-                 <div>
-                   <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Regex Pattern Matches</p>
-                   <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
-                     {stats.regex.count.toLocaleString()}
-                     <span className="text-sm font-normal text-emerald-400 ml-2">({stats.regex.percent}%)</span>
-                   </h3>
-                 </div>
+                <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <Cpu size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">ML & LLM Processed</p>
+                  <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
+                    {stats.complex.count.toLocaleString()}
+                    <span className="text-sm font-normal text-indigo-400 ml-2">({stats.complex.percent}%)</span>
+                  </h3>
+                </div>
+              </div>
+
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <Zap size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Regex Pattern Matches</p>
+                  <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
+                    {stats.regex.count.toLocaleString()}
+                    <span className="text-sm font-normal text-emerald-400 ml-2">({stats.regex.percent}%)</span>
+                  </h3>
+                </div>
               </div>
             </div>
 
@@ -816,14 +950,13 @@ export default function App() {
                   <p className="text-xs text-gray-400 mb-4">
                     Choose a CSV file with logs. The headers must map to <code className="bg-gray-800/50 text-gray-300 px-1.5 py-0.5 rounded font-mono">source</code> and <code className="bg-gray-800/50 text-gray-300 px-1.5 py-0.5 rounded font-mono">log_message</code>.
                   </p>
-                  
-                  <div 
-                    {...getLogUploadProps()} 
-                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${
-                      isLogDragActive 
-                        ? 'border-blue-500 bg-blue-500/10 scale-[0.99]' 
+
+                  <div
+                    {...getLogUploadProps()}
+                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${isLogDragActive
+                        ? 'border-blue-500 bg-blue-500/10 scale-[0.99]'
                         : 'border-[#2D3E5D] hover:border-blue-500/50 hover:bg-[#182030]/30'
-                    }`}
+                      }`}
                   >
                     <input {...getLogUploadInputProps()} />
                     <div className="flex flex-col items-center justify-center space-y-4">
@@ -847,7 +980,7 @@ export default function App() {
                         </span>
                       </div>
                       <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
-                        <div 
+                        <div
                           className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
                           style={{ width: `${(uploadProgress.processed / uploadProgress.total) * 100}%` }}
                         />
@@ -864,7 +997,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                
+
                 {/* Active Model Indicator */}
                 <div className="glass-card rounded-2xl p-6 shadow-lg space-y-4 animate-fade-in">
                   <h3 className="font-semibold text-white flex items-center gap-2 text-sm border-b border-gray-800/80 pb-2">
@@ -898,7 +1031,7 @@ export default function App() {
               {/* Search & Logs list (Right) */}
               <div className="lg:col-span-2 space-y-4">
                 <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
-                  
+
                   {/* Search and Filters */}
                   <div className="p-4 bg-[#171E2E]/40 border-b border-[#222E45]/60 flex flex-col sm:flex-row gap-3 items-center">
                     <div className="relative w-full sm:flex-1">
@@ -913,7 +1046,7 @@ export default function App() {
                         className="w-full bg-[#1C2538] text-white pl-10 pr-4 py-2 rounded-xl text-sm border border-[#2D3E5D] focus:outline-none focus:border-blue-500 transition-colors"
                       />
                     </div>
-                    
+
                     <div className="flex gap-2 w-full sm:w-auto">
                       <div className="flex items-center gap-1 bg-[#1C2538] border border-[#2D3E5D] rounded-xl px-2 py-1.5 text-xs text-gray-400">
                         <Filter size={14} />
@@ -955,7 +1088,7 @@ export default function App() {
                         <div>
                           <p className="text-base font-semibold text-gray-300">No logs found</p>
                           <p className="text-xs text-gray-500 mt-1">
-                            {logs.length === 0 
+                            {logs.length === 0
                               ? "Upload a log dataset on the left to analyze."
                               : "Try adjusting filters or search term."
                             }
@@ -982,8 +1115,34 @@ export default function App() {
                               <td className="py-3 px-4 font-mono text-gray-200 max-w-xs truncate" title={log.log_message}>
                                 {log.log_message}
                               </td>
-                              <td className="py-3 px-4 whitespace-nowrap">
-                                {getLabelBadge(log.target_label)}
+                               <td className="py-3 px-4 whitespace-nowrap">
+                                {editingLogId === log.id ? (
+                                  <select
+                                    defaultValue={log.target_label || ''}
+                                    onChange={(e) => handleSaveLabelCorrection(log.id, e.target.value)}
+                                    onBlur={() => setEditingLogId(null)}
+                                    className="bg-[#1C2538] text-xs text-white border border-[#2D3E5D] rounded px-2 py-1 focus:outline-none focus:border-blue-500"
+                                    autoFocus
+                                  >
+                                    <option value="" disabled>Select label...</option>
+                                    {['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].map(lbl => (
+                                      <option key={lbl} value={lbl}>{lbl}</option>
+                                    ))}
+                                    {uniqueLabels.filter(lbl => !['INFO_ACCESS', 'SERVER_ERROR', 'SUCCESS', 'WARN', 'USER_ACTION', 'DATABASE_ERROR', 'NETWORK_TRAFFIC'].includes(lbl)).map(lbl => (
+                                      <option key={lbl} value={lbl}>{lbl}</option>
+                                    ))}
+                                    <option value="__custom__">Custom label...</option>
+                                  </select>
+                                ) : (
+                                  <div 
+                                    className="flex items-center gap-1.5 group cursor-pointer" 
+                                    onClick={() => setEditingLogId(log.id)}
+                                    title="Click to correct label"
+                                  >
+                                    {getLabelBadge(log.target_label)}
+                                    <span className="text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] ml-1">✏️</span>
+                                  </div>
+                                )}
                               </td>
                               <td className="py-3 px-4 whitespace-nowrap font-mono font-medium">
                                 {log.confidence !== null ? (
@@ -1005,11 +1164,13 @@ export default function App() {
                   </div>
 
                   {/* Footer */}
-                  <div className="p-3 bg-[#171E2E]/60 border-t border-[#222E45] text-xs text-gray-500 flex justify-between items-center">
-                    <span>Showing {filteredLogs.length} of {logs.length} logs</span>
-                    <button 
+                  <div className="p-3 bg-[#171E2E]/60 border-t border-[#222E45] text-xs text-gray-400 flex justify-between items-center">
+                    <span>
+                      Showing {filteredLogs.length} of {totalMatchingLogsCount.toLocaleString()} matching logs (Total stored: {logStats.total.toLocaleString()})
+                    </span>
+                    <button
                       onClick={handleClearLogs}
-                      disabled={logs.length === 0}
+                      disabled={logStats.total === 0}
                       className="text-red-400/80 hover:text-red-400 font-medium disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-all"
                     >
                       <Trash2 size={13} /> Clear Stored Logs
@@ -1024,23 +1185,22 @@ export default function App() {
         {/* ==================== TAB 2: MODEL TRAINING ==================== */}
         {activeTab === 'training' && (
           <div className="animate-fade-in animate-slide-up grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
+
             {/* Left: Trigger panel & Active stats */}
             <div className="lg:col-span-1 space-y-6">
-              
+
               {/* Training upload */}
               <div className="glass-card rounded-2xl p-6 shadow-lg">
                 <h2 className="text-lg font-semibold text-white mb-2">Train Log Classifier</h2>
                 <p className="text-xs text-gray-400 mb-4">
                   Upload a labeled training CSV dataset containing <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">log_message</code> and <code className="bg-gray-800 text-gray-300 px-1 rounded font-mono">target_label</code> columns to train a new Logistic Regression classifier.
                 </p>
-                
-                <div 
-                  {...getTrainUploadProps()} 
-                  className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
-                    isTraining ? 'opacity-40 cursor-not-allowed border-gray-700 bg-gray-900/10' :
-                    isTrainDragActive ? 'border-indigo-500 bg-indigo-500/5' : 'border-[#2D3E5D] hover:border-gray-500 hover:bg-[#182030]'
-                  }`}
+
+                <div
+                  {...getTrainUploadProps()}
+                  className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${isTraining ? 'opacity-40 cursor-not-allowed border-gray-700 bg-gray-900/10' :
+                      isTrainDragActive ? 'border-indigo-500 bg-indigo-500/5' : 'border-[#2D3E5D] hover:border-gray-500 hover:bg-[#182030]'
+                    }`}
                 >
                   <input {...getTrainUploadInputProps()} />
                   <div className="flex flex-col items-center justify-center space-y-4">
@@ -1058,12 +1218,20 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-4">
-                  <button 
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
                     onClick={handleDownloadDataset}
                     className="w-full flex items-center justify-center gap-2 py-2 bg-[#1C2538] hover:bg-[#26324D] border border-[#2D3E5D] text-xs font-semibold rounded-xl text-indigo-300 transition-colors"
                   >
                     <Download size={14} /> Download Sample Training Dataset
+                  </button>
+                  <button
+                    onClick={handleTrainFromDB}
+                    disabled={isTraining || dbTrainingEligibleCount < 10}
+                    className="w-full flex items-center justify-center gap-2 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-650 hover:to-purple-750 text-xs font-semibold rounded-xl text-white transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed border border-indigo-550/20"
+                    title={dbTrainingEligibleCount < 10 ? "Requires at least 10 high-confidence or manually corrected logs" : "Train ML model using SQLite collected logs"}
+                  >
+                    <Cpu size={14} /> Retrain on DB Logs ({dbTrainingEligibleCount} ready)
                   </button>
                 </div>
 
@@ -1075,7 +1243,7 @@ export default function App() {
                       <span className="text-indigo-400 font-semibold">{trainProgress.processed}%</span>
                     </div>
                     <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
-                      <div 
+                      <div
                         className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300"
                         style={{ width: `${trainProgress.processed}%` }}
                       />
@@ -1130,7 +1298,7 @@ export default function App() {
 
             {/* Right: Rules manager, Live Console, and Version Registry */}
             <div className="lg:col-span-2 space-y-6">
-              
+
               {/* Custom Regex Rules Manager */}
               <div className="glass-card rounded-2xl shadow-lg p-6 space-y-4 animate-fade-in">
                 <h3 className="font-semibold text-white text-sm flex items-center gap-2 border-b border-gray-800 pb-2">
@@ -1139,12 +1307,12 @@ export default function App() {
                 <p className="text-xs text-gray-400">
                   Define static rules to override the ML classifier. If a log message matches the regex pattern, it will instantly classify with 100% confidence.
                 </p>
-                
+
                 {/* Add rule form */}
                 <form onSubmit={handleAddRegexRule} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="sm:col-span-2">
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       placeholder="Regex pattern (e.g. Inference completed.*)"
                       value={newPattern}
                       onChange={(e) => setNewPattern(e.target.value)}
@@ -1153,15 +1321,15 @@ export default function App() {
                     />
                   </div>
                   <div className="flex gap-2">
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       placeholder="Target label (e.g. Success)"
                       value={newTargetLabel}
                       onChange={(e) => setNewTargetLabel(e.target.value)}
                       className="w-full bg-[#1C2538] text-xs text-white px-3 py-2 rounded-xl border border-[#2D3E5D] focus:outline-none focus:border-blue-500"
                       required
                     />
-                    <button 
+                    <button
                       type="submit"
                       disabled={isAddingRule}
                       className="px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl flex items-center justify-center shrink-0 transition-colors disabled:opacity-50"
@@ -1190,7 +1358,7 @@ export default function App() {
                             <td className="py-2 px-3 font-mono text-gray-300 break-all">{rule.pattern}</td>
                             <td className="py-2 px-3">{getLabelBadge(rule.target_label)}</td>
                             <td className="py-2 px-3 text-right">
-                              <button 
+                              <button
                                 onClick={() => handleDeleteRegexRule(rule.id)}
                                 className="text-red-400 hover:text-red-300 p-1 rounded hover:bg-red-500/10 transition-all"
                               >
@@ -1277,7 +1445,7 @@ export default function App() {
                     <History size={16} className="text-indigo-400" /> Trained Model History & Version Registry
                   </h3>
                 </div>
-                
+
                 {modelVersions.length === 0 ? (
                   <div className="py-10 text-center text-gray-500 text-xs">No trained models registered yet.</div>
                 ) : (
@@ -1307,14 +1475,28 @@ export default function App() {
                                 <span className="text-gray-600">—</span>
                               )}
                             </td>
-                            <td className="py-2.5 px-4 text-right">
+                            <td className="py-2.5 px-4 text-right flex justify-end gap-1.5 whitespace-nowrap">
+                              <button
+                                onClick={() => setInspectingVersion(version)}
+                                className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-xs font-semibold rounded-lg transition-colors"
+                              >
+                                Inspect
+                              </button>
                               {!version.is_active && (
-                                <button 
-                                  onClick={() => handleActivateModel(version.id)}
-                                  className="px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 text-xs font-semibold rounded-lg transition-colors"
-                                >
-                                  Activate
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() => handleActivateModel(version.id)}
+                                    className="px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 text-xs font-semibold rounded-lg transition-colors"
+                                  >
+                                    Activate
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteModelVersion(version.id)}
+                                    className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-semibold rounded-lg transition-colors"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
                               )}
                             </td>
                           </tr>
@@ -1333,10 +1515,10 @@ export default function App() {
         {/* ==================== TAB 3: SYSTEM MONITORING ==================== */}
         {activeTab === 'monitoring' && (
           <div className="animate-fade-in animate-slide-up space-y-8">
-            
+
             {/* System Status Indicators Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              
+
               {/* postgres */}
               <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
@@ -1423,7 +1605,7 @@ export default function App() {
                             <Cell key={`cell-${index}`} fill={entry.color} />
                           ))}
                         </Pie>
-                        <Tooltip 
+                        <Tooltip
                           contentStyle={{ backgroundColor: '#131926', border: '1px solid #2D3E5D', borderRadius: '10px' }}
                           itemStyle={{ color: '#fff', fontSize: '12px' }}
                         />
@@ -1447,7 +1629,7 @@ export default function App() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#222E45" vertical={false} />
                         <XAxis dataKey="name" stroke="#9CA3AF" fontSize={10} tickLine={false} />
                         <YAxis stroke="#9CA3AF" fontSize={10} tickLine={false} />
-                        <Tooltip 
+                        <Tooltip
                           contentStyle={{ backgroundColor: '#131926', border: '1px solid #2D3E5D', borderRadius: '10px' }}
                           itemStyle={{ color: '#fff', fontSize: '12px' }}
                           labelStyle={{ color: '#8B5CF6', fontSize: '11px', fontWeight: 'bold' }}
@@ -1466,18 +1648,18 @@ export default function App() {
 
             {/* Visual Analytics grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              
+
               {/* Method Usage progress bars */}
               <div className="glass-card rounded-2xl p-6 shadow-lg space-y-6">
                 <h3 className="text-base font-semibold text-white border-b border-gray-800 pb-3 flex items-center gap-2">
                   <Zap size={16} className="text-blue-400" /> Pipeline Method Performance
                 </h3>
-                
+
                 {logs.length === 0 ? (
                   <div className="py-20 text-center text-xs text-gray-500">No logs classified. Upload data to view classification pipeline analytics.</div>
                 ) : (
                   <div className="space-y-5">
-                    
+
                     {/* Regex usage */}
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs font-medium">
@@ -1521,7 +1703,7 @@ export default function App() {
                   <span className="flex items-center gap-2"><Activity size={16} className="text-pink-400 animate-pulse" /> Live Log Classification Stream</span>
                   <span className="text-[10px] text-gray-500">Last 5 activities</span>
                 </h3>
-                
+
                 {liveLogs.length === 0 ? (
                   <div className="py-20 text-center text-xs text-gray-500 flex-1 flex items-center justify-center">No live log activity recorded.</div>
                 ) : (
@@ -1552,11 +1734,10 @@ export default function App() {
               <div className="p-5 bg-gradient-to-r from-[#131926] to-[#171E2E] border-b border-[#222E45]">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div className="flex items-center gap-3">
-                    <div className={`p-2.5 rounded-xl transition-all duration-300 ${
-                      simulatorActive 
-                        ? 'bg-emerald-500/15 text-emerald-400 shadow-lg shadow-emerald-500/10' 
+                    <div className={`p-2.5 rounded-xl transition-all duration-300 ${simulatorActive
+                        ? 'bg-emerald-500/15 text-emerald-400 shadow-lg shadow-emerald-500/10'
                         : 'bg-gray-700/20 text-gray-400'
-                    }`}>
+                      }`}>
                       <Radio size={22} className={simulatorActive ? 'animate-pulse' : ''} />
                     </div>
                     <div>
@@ -1591,11 +1772,10 @@ export default function App() {
                     {/* Toggle Button */}
                     <button
                       onClick={handleToggleSimulator}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all duration-300 shadow-lg ${
-                        simulatorActive
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all duration-300 shadow-lg ${simulatorActive
                           ? 'bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 hover:shadow-red-500/10'
                           : 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white hover:shadow-emerald-500/25 hover:scale-[1.02]'
-                      }`}
+                        }`}
                     >
                       {simulatorActive ? <><Pause size={16} /> Stop Stream</> : <><Play size={16} /> Start Stream</>}
                     </button>
@@ -1645,12 +1825,11 @@ export default function App() {
                     simulatorConsole.map((entry, idx) => (
                       <div key={idx} className="flex gap-2 items-start group hover:bg-[#0E1425] px-1 py-0.5 rounded transition-colors animate-fade-in">
                         <span className="text-gray-600 select-none shrink-0">[{new Date(entry.timestamp).toLocaleTimeString()}]</span>
-                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                          entry.method === 'ML' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
-                          entry.method === 'Regex' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                          entry.method === 'LLM' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                          'bg-gray-500/10 text-gray-400 border-gray-500/20'
-                        }`}>{entry.method}</span>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${entry.method === 'ML' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
+                            entry.method === 'Regex' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                              entry.method === 'LLM' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                                'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                          }`}>{entry.method}</span>
                         <span className="text-cyan-400/70 shrink-0">{entry.source}</span>
                         <span className="text-gray-300 break-all">{entry.message}</span>
                         <span className="ml-auto text-emerald-400/80 shrink-0 font-semibold">→ {entry.label}</span>
@@ -1663,10 +1842,166 @@ export default function App() {
               </div>
             </div>
 
+            {/* ====== DEVELOPER INTEGRATION explorer ====== */}
+            <div className="glass-card rounded-2xl shadow-xl overflow-hidden animate-fade-in p-6 space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Settings size={18} className="text-indigo-400" /> Developer Integration API
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">Integrate the real-time classification pipeline into your external microservices and scripts.</p>
+              </div>
+
+              <div className="flex gap-2 border-b border-[#222E45]/80 pb-2">
+                {['curl', 'python', 'node'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setDevTab(tab as 'curl' | 'python' | 'node')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all ${
+                      devTab === tab 
+                        ? 'bg-[#1E293B] text-indigo-400 border border-indigo-500/20' 
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {tab === 'node' ? 'Node.js' : tab}
+                  </button>
+                ))}
+              </div>
+
+              <div className="bg-[#070A13] border border-[#242F4D]/50 rounded-xl p-4 font-mono text-xs text-gray-300 relative group max-h-[200px] overflow-y-auto">
+                {devTab === 'curl' && (
+                  <pre className="whitespace-pre-wrap">
+                    {`curl -X POST "http://localhost:8000/api/logs/classify?save_to_db=true" \\
+  -H "Content-Type: application/json" \\
+  -d '{"log_message": "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."}'`}
+                  </pre>
+                )}
+                {devTab === 'python' && (
+                  <pre className="whitespace-pre-wrap">
+                    {`import requests
+
+url = "http://localhost:8000/api/logs/classify?save_to_db=true"
+payload = {
+    "log_message": "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."
+}
+response = requests.post(url, json=payload)
+print(response.json())`}
+                  </pre>
+                )}
+                {devTab === 'node' && (
+                  <pre className="whitespace-pre-wrap">
+                    {`fetch("http://localhost:8000/api/logs/classify?save_to_db=true", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    log_message: "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."
+  })
+})
+.then(res => res.json())
+.then(data => console.log(data));`}
+                  </pre>
+                )}
+              </div>
+            </div>
+
           </div>
         )}
 
       </div>
+
+      {/* inspectingVersion details modal */}
+      {inspectingVersion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="glass-card w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden border border-gray-700/80 m-4 animate-scale-in">
+            <div className="p-5 bg-[#171E2E] border-b border-gray-800 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-white text-base">Model Version Details</h3>
+                <p className="text-xs text-indigo-400 font-mono mt-0.5">{inspectingVersion.version_tag}</p>
+              </div>
+              <button 
+                onClick={() => setInspectingVersion(null)}
+                className="text-gray-450 hover:text-white hover:bg-white/5 p-1 rounded-lg transition-colors text-lg"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
+                  <span className="text-gray-400 block mb-0.5">Records Used</span>
+                  <span className="text-white font-mono font-bold">{inspectingVersion.num_records.toLocaleString()}</span>
+                </div>
+                <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
+                  <span className="text-gray-400 block mb-0.5">Overall Accuracy</span>
+                  <span className="text-emerald-400 font-mono font-bold">{(inspectingVersion.accuracy * 100).toFixed(2)}%</span>
+                </div>
+                <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
+                  <span className="text-gray-400 block mb-0.5">Dataset Source</span>
+                  <span className="text-white font-semibold truncate block" title={inspectingVersion.dataset_name}>{inspectingVersion.dataset_name}</span>
+                </div>
+                <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
+                  <span className="text-gray-400 block mb-0.5">Trained On</span>
+                  <span className="text-white font-semibold block">{new Date(inspectingVersion.created_at).toLocaleDateString()}</span>
+                </div>
+              </div>
+
+              <div className="border border-gray-800/80 rounded-xl overflow-hidden">
+                <div className="p-3 bg-[#171E2E]/40 border-b border-gray-800/80">
+                  <h4 className="text-xs font-semibold text-gray-300">Classification Report Metrics</h4>
+                </div>
+                <div className="overflow-x-auto max-h-[240px]">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-[#222E45]/80 bg-[#171E2E]/20 text-[10px] font-bold text-gray-400 uppercase">
+                        <th className="py-2 px-4">Class Label</th>
+                        <th className="py-2 px-4 text-center">Precision</th>
+                        <th className="py-2 px-4 text-center">Recall</th>
+                        <th className="py-2 px-4 text-center">F1-Score</th>
+                        <th className="py-2 px-4 text-right">Support</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1E293B] text-[11px]">
+                      {inspectReportData.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-6 text-center text-gray-500 italic">No per-class metrics available.</td>
+                        </tr>
+                      ) : (
+                        inspectReportData.map((row) => (
+                          <tr key={row.name} className="hover:bg-[#1C2538]/30 transition-colors">
+                            <td className="py-2 px-4 font-semibold text-gray-300">{row.name}</td>
+                            <td className="py-2 px-4 text-center font-mono font-medium text-gray-300">{(row.precision * 100).toFixed(1)}%</td>
+                            <td className="py-2 px-4 text-center font-mono font-medium text-gray-300">{(row.recall * 100).toFixed(1)}%</td>
+                            <td className="py-2 px-4 text-center font-mono font-bold text-indigo-400">{(row.f1Score * 100).toFixed(1)}%</td>
+                            <td className="py-2 px-4 text-right font-mono text-gray-400">{row.support}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div className="p-4 bg-[#111728] border-t border-gray-800 flex justify-end gap-2">
+              <button
+                onClick={() => setInspectingVersion(null)}
+                className="px-4 py-2 bg-gray-850 hover:bg-gray-800 border border-gray-700/80 text-xs font-semibold rounded-lg text-white transition-colors"
+              >
+                Close
+              </button>
+              {!inspectingVersion.is_active && (
+                <button
+                  onClick={() => {
+                    handleActivateModel(inspectingVersion.id);
+                    setInspectingVersion(null);
+                  }}
+                  className="px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-xs font-semibold rounded-lg text-white transition-colors"
+                >
+                  Activate Version
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
