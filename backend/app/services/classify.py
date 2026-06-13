@@ -1,11 +1,11 @@
 from app.services.processor_regex import classify_with_regex
-from app.services.processor_bert import classify_with_bert
+from app.services.processor_bert import classify_with_bert, classify_with_bert_with_confidence
 from app.services.processor_llm import classify_with_llm
 
 def classify(logs):
     labels = []
     for source, log_msg in logs:
-        label = classify_log(source, log_msg)
+        label, _, _ = classify_log(source, log_msg)
         labels.append(label)
     return labels
 
@@ -13,13 +13,13 @@ def classify(logs):
 def classify_log(source, log_msg):
     if source == "LegacyCRM":
         label = classify_with_llm(log_msg)
-        return label, "LLM"
+        return label, "LLM", 1.0
     else:
         label = classify_with_regex(log_msg)
         if label:
-            return label, "Regex"
-        label = classify_with_bert(log_msg)
-        return label, "ML"
+            return label, "Regex", 1.0
+        label, confidence = classify_with_bert_with_confidence(log_msg)
+        return label, "ML", confidence
 
 def classify_csv(input_file):
     import pandas as pd

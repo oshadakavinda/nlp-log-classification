@@ -1,0 +1,45 @@
+2026-06-13 12:00:00,000 | INFO | FeatureStore | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 48.7ms
+2026-06-13 12:00:23,709 | INFO | PredictionLogger | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 36.53ms
+2026-06-13 12:00:07,344 | INFO | ModelPipeline | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 64.1ms
+{"timestamp": "2026-06-13 12:00:30,962", "level": "INFO", "model_id": "fraud_detection_v2.1", "request_id": "req-655514", "features": {"user_id": "USR_1818", "session_depth": 15, "amount": 287.38}, "prediction": 0.624}
+{"timestamp": "2026-06-13 12:00:52,724", "level": "INFO", "model_id": "fraud_detection_v2.1", "request_id": "req-439209", "features": {"user_id": "USR_8474", "session_depth": 7, "amount": 632.99}, "prediction": 0.3194}
+{"timestamp": "2026-06-13 12:00:46,381", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-558917", "features": {"user_id": "USR_3915", "session_depth": 3, "amount": 345.17}, "prediction": 0.2648}
+2026-06-13 12:00:57,090 | INFO | PredictionLogger | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 91.93ms
+2026-06-13 12:01:14,685 | INFO | ModelPipeline | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 131.06ms
+2026-06-13 12:01:59,546 | INFO | DataPreprocessor | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 83.1ms
+2026-06-13 12:03:23,295 | INFO | InferenceAPI | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 128.97ms
+2026-06-13 12:04:20,435 | INFO | ModelPipeline | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 83.35ms
+2026-06-13 12:05:29,070 | INFO | DataPreprocessor | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 44.27ms
+2026-06-13 12:02:17,967 | INFO | InferenceAPI | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 92.57ms
+2026-06-13 12:01:29,223 | INFO | InferenceAPI | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 136.47ms
+2026-06-13 12:01:12,425 | INFO | DataPreprocessor | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 46.07ms
+2026-06-13 12:04:47,810 | WARNING | PredictionLogger | FailCode: 500 | Message: AuthorizationError: Invalid API key format received.
+{"timestamp": "2026-06-13 12:03:30,460", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-314328", "features": {"user_id": "USR_7070", "session_depth": 13, "amount": 253.84}, "prediction": 0.5354}
+{"timestamp": "2026-06-13 12:05:43,726", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-937772", "features": {"user_id": "USR_8474", "session_depth": 10, "amount": 563.88}, "prediction": 0.0144}
+2026-06-13 12:04:45,032 | INFO | PredictionLogger | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 136.71ms
+{"timestamp": "2026-06-13 12:04:09,091", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-192667", "features": {"user_id": "USR_3038", "session_depth": 7, "amount": 1318.19}, "prediction": 0.7581}
+2026-06-13 12:03:00,828 | WARNING | PredictionLogger | FailCode: 500 | Message: PredictionDriftWarning: Output distributions deviate > 15% from baseline.
+2026-06-13 12:03:27,169 | INFO | PredictionLogger | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 114.41ms
+2026-06-13 12:09:23,210 | INFO | InferenceAPI | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 133.21ms
+2026-06-13 12:02:50,718 | INFO | FeatureStore | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 85.63ms
+2026-06-13 12:05:11,797 | INFO | InferenceAPI | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 82.47ms
+2026-06-13 12:05:40,316 | WARNING | ModelPipeline | FailCode: 500 | Message: PredictionDriftWarning: Output distributions deviate > 15% from baseline.
+2026-06-13 12:07:08,683 | INFO | ModelPipeline | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 103.55ms
+2026-06-13 12:03:56,409 | INFO | FeatureStore | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 26.05ms
+2026-06-13 12:03:23,612 | INFO | InferenceAPI | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 58.1ms
+2026-06-13 12:12:41,358 | ERROR | ModelPipeline | FailCode: 500 | Message: RuntimeError: CUDA out of memory. Falling back to CPU inference.
+2026-06-13 12:05:09,055 | INFO | PredictionLogger | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 120.7ms
+2026-06-13 12:14:02,955 | INFO | InferenceAPI | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 38.85ms
+2026-06-13 12:10:45,002 | INFO | FeatureStore | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 25.36ms
+2026-06-13 12:02:01,092 | WARNING | FeatureStore | FailCode: 500 | Message: AuthorizationError: Invalid API key format received.
+2026-06-13 12:05:30,959 | INFO | DataPreprocessor | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 143.42ms
+2026-06-13 12:13:54,267 | INFO | FeatureStore | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 62.27ms
+2026-06-13 12:12:03,665 | INFO | ModelPipeline | Model: fraud_detection_v2.1 | Status: 200 OK | Latency: 142.62ms
+2026-06-13 12:16:23,795 | ERROR | InferenceAPI | FailCode: 500 | Message: AuthorizationError: Invalid API key format received.
+2026-06-13 12:06:33,610 | INFO | DataPreprocessor | Model: recommendation_engine_v4 | Status: 200 OK | Latency: 112.25ms
+{"timestamp": "2026-06-13 12:07:13,520", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-297949", "features": {"user_id": "USR_6095", "session_depth": 5, "amount": 1481.57}, "prediction": 0.8384}
+2026-06-13 12:04:09,395 | INFO | ModelPipeline | Model: customer_churn_v1.0 | Status: 200 OK | Latency: 142.19ms
+{"timestamp": "2026-06-13 12:05:06,254", "level": "INFO", "model_id": "recommendation_engine_v4", "request_id": "req-951540", "features": {"user_id": "USR_2865", "session_depth": 9, "amount": 1744.06}, "prediction": 0.3718}
+2026-06-13 12:17:30,367 | WARNING | PredictionLogger | FailCode: 500 | Message: RuntimeError: CUDA out of memory. Falling back to CPU inference.
+2026-06-13 12:13:03,352 | WARNING | PredictionLogger | FailCode: 500 | Message: ValueError: Input feature 'age' contains NaN values.
+{"timestamp": "2026-06-13 12:08:10,416", "level": "INFO", "model_id": "fraud_detection_v2.1", "request_id": "req-655073", "features": {"user_id": "USR_4415", "session_depth": 13, "amount": 1580.82}, "prediction": 0.6303}
