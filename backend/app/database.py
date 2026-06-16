@@ -16,6 +16,7 @@ def init_db():
     from app.models.log import LogEntry
     from app.models.model_version import ModelVersion
     from app.models.regex_rule import RegexRule
+    from app.models.api_key import APIKey
     SQLModel.metadata.create_all(engine)
 
 def get_session():

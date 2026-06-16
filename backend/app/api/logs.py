@@ -12,6 +12,8 @@ from app.database import get_session
 from app.models.log import LogEntry
 from app.models.model_version import ModelVersion
 from app.models.regex_rule import RegexRule
+from app.models.api_key import APIKey
+from app.api.keys import get_api_key
 from app.services.classify import classify_log, infer_source
 from app.core.config import settings
 import asyncio
@@ -380,7 +382,8 @@ def get_system_status(session: Session = Depends(get_session)):
 def classify_logs_api(
     payload: Union[SingleLogRequest, List[SingleLogRequest]],
     save_to_db: bool = False,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    api_key: Optional[APIKey] = Depends(get_api_key)
 ):
     is_list = isinstance(payload, list)
     items = payload if is_list else [payload]

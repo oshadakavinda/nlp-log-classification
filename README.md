@@ -27,9 +27,10 @@ The backend routes incoming logs through a 3-stage intelligence cascade:
 - **Performance Inspection**: Click **"Inspect"** on any version to open a modal detailing the per-class precision, recall, and F1-score classification report.
 - **Model Purging**: Click **"Delete"** to permanently delete inactive model version weights from disk and remove their records from the DB.
 
-### 5. Developer Integration API Explorer
-- **Developer Panel**: Exposes copy-pasteable snippets for **cURL**, **Python (requests)**, and **Node.js (fetch)**.
-- **Ingestion API**: Exposes a `POST /api/logs/classify?save_to_db=true` endpoint that microservices can use to ingest and categorize logs on-the-fly.
+### 5. Developer API Keys & Integration Explorer
+- **SaaS API Key Registry**: Generates secure tokens starting with `nlp_live_` to authenticate external integration calls. Keys are saved securely using SHA-256 hashes, with prefixes (e.g. `nlp_live_abc12345`) exposed for registry visibility.
+- **Request Telemetry**: Tracks live usage metrics (`total_calls`) individually across all active API keys.
+- **Developer Snippets**: Includes copy-pasteable snippets for **cURL**, **Python (requests)**, and **Node.js (fetch)**. The code explorer allows developers to dynamically inject their active API key prefixes into code blocks for easy onboarding.
 
 ### 6. Live Log Simulator & Source Heuristic Inference
 - **Log Stream Simulator**: Generate synthetic production logs at adjustable speeds (from 500ms to 3s) using a toggle switch in the **System Monitoring** dashboard.
@@ -166,9 +167,12 @@ To run services individually without Docker:
 - **Database Retraining**: Click the **"Retrain Model on Database Logs"** button under the Model Training tab to fit a new Logistic Regression classifier directly on logs collected in the database.
 - **Version Switcher**: View accuracy, precision, and recall metrics in the training report and click **Activate** on any history entry to instantly roll back or promote a model version.
 
-### 4. API Integration
+### 4. API Integration & Key Authentication
 For direct program integrations, query the production classification endpoint:
 - **Endpoint**: `POST http://localhost:8000/api/logs/classify`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `X-API-Key: <YOUR_API_KEY>` (Optional. If provided, validates the key and increments key invocation metrics. If missing, allows unauthenticated local requests to succeed).
 - **Request Format (Single Log)**:
   ```json
   {
@@ -181,7 +185,7 @@ For direct program integrations, query the production classification endpoint:
   [
     { "log_message": "User 12345 logged in.", "source": "BillingSystem" },
     { "log_message": "Backup completed successfully.", "source": "AnalyticsEngine" }
-  }
+  ]
   ```
 - **Response Format**:
   ```json

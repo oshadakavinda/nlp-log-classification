@@ -21,7 +21,10 @@ import {
   Plus,
   Play,
   Pause,
-  Radio
+  Radio,
+  Key,
+  Copy,
+  Check
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -108,11 +111,28 @@ interface ActiveModel {
   message?: string;
 }
 
+interface APIKeyData {
+  id: number;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  is_active: boolean;
+  total_calls: number;
+}
+
 export default function App() {
   const queryClient = useQueryClient();
 
-  // Navigation tabs: 'analytics' | 'training' | 'monitoring'
-  const [activeTab, setActiveTab] = useState<'analytics' | 'training' | 'monitoring'>('analytics');
+  // Navigation tabs: 'analytics' | 'training' | 'monitoring' | 'keys'
+  const [activeTab, setActiveTab] = useState<'analytics' | 'training' | 'monitoring' | 'keys'>('analytics');
+
+  // API Keys state
+  const [newKeyName, setNewKeyName] = useState('');
+  const [isGeneratingKey, setIsGeneratingKey] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState<{ raw_key: string; key_prefix: string; name: string } | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
+  const [copiedSnippet, setCopiedSnippet] = useState(false);
+  const [selectedKeyForSnippet, setSelectedKeyForSnippet] = useState('');
 
   const uploadWsRef = useRef<WebSocket | null>(null);
   const trainWsRef = useRef<WebSocket | null>(null);
@@ -220,6 +240,66 @@ export default function App() {
     },
     refetchInterval: 10000, // Poll system health every 10s
   });
+
+  const { data: apiKeys = [], refetch: refetchApiKeys } = useQuery<APIKeyData[]>({
+    queryKey: ['apiKeys'],
+    queryFn: async () => {
+      const response = await fetch('http://localhost:8000/api/keys');
+      if (!response.ok) throw new Error('Failed to fetch API keys');
+      return response.json();
+    }
+  });
+
+  const handleGenerateKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKeyName.trim()) return;
+    setIsGeneratingKey(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newKeyName.trim() })
+      });
+      if (!response.ok) throw new Error('Failed to generate API key');
+      const data = await response.json();
+      setGeneratedKey(data);
+      setNewKeyName('');
+      refetchApiKeys();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to generate API Key');
+    } finally {
+      setIsGeneratingKey(false);
+    }
+  };
+
+  const handleRevokeKey = async (id: number) => {
+    if (!window.confirm("Are you sure you want to revoke/delete this API key? This will immediately disable integration access for any applications using it.")) {
+      return;
+    }
+    try {
+      const response = await fetch(`http://localhost:8000/api/keys/${id}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) throw new Error('Failed to revoke API key');
+      refetchApiKeys();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to revoke API Key');
+    }
+  };
+
+  const handleCopyKey = (key: string) => {
+    navigator.clipboard.writeText(key);
+    setCopiedKey(true);
+    setTimeout(() => setCopiedKey(false), 2000);
+  };
+
+  const handleCopySnippet = (snippet: string) => {
+    navigator.clipboard.writeText(snippet);
+    setCopiedSnippet(true);
+    setTimeout(() => setCopiedSnippet(false), 2000);
+  };
 
   // Keep live feed updated with recent log additions
   useEffect(() => {
@@ -911,6 +991,15 @@ export default function App() {
                 }`}
             >
               <Activity size={15} /> System Monitoring
+            </button>
+            <button
+              onClick={() => setActiveTab('keys')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeTab === 'keys'
+                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-md scale-[1.02]'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5 hover:scale-[1.02]'
+                }`}
+            >
+              <Key size={15} /> API Keys
             </button>
           </div>
         </header>
@@ -1920,66 +2009,256 @@ export default function App() {
                   )}
                 </div>
               </div>
+            </div>          </div>
+        )}
+
+        {/* ==================== TAB 4: API ACCESS KEYS ==================== */}
+        {activeTab === 'keys' && (
+          <div className="animate-fade-in animate-slide-up space-y-8">
+            {/* API Keys Usage Stats & Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                <div className="p-3 bg-pink-500/10 text-pink-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <Key size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Active API Keys</p>
+                  <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">{apiKeys.filter((k: any) => k.is_active).length}</h3>
+                </div>
+              </div>
+
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                <div className="p-3 bg-purple-500/10 text-purple-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <Activity size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Key Invocations</p>
+                  <h3 className="text-3xl font-bold text-white mt-1 tracking-tight">
+                    {apiKeys.reduce((acc: number, key: any) => acc + key.total_calls, 0).toLocaleString()}
+                  </h3>
+                </div>
+              </div>
+
+              <div className="glass-card glass-card-hover rounded-2xl p-6 shadow-lg flex items-center space-x-4 group">
+                <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                  <Zap size={28} />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Top Client Key</p>
+                  <h3 className="text-base font-bold text-white mt-1 tracking-tight truncate max-w-[200px]" title={
+                    apiKeys.length > 0 ? apiKeys.reduce((prev: any, current: any) => (prev.total_calls > current.total_calls) ? prev : current).name : 'None'
+                  }>
+                    {apiKeys.length > 0 
+                      ? (() => {
+                          const topKey = apiKeys.reduce((prev: any, current: any) => (prev.total_calls > current.total_calls) ? prev : current);
+                          return `${topKey.name} (${topKey.total_calls})`;
+                        })()
+                      : 'None'}
+                  </h3>
+                </div>
+              </div>
+            </div>
+
+            {/* Generation Form and Active Keys Table */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              
+              {/* Left Column: Generate Key */}
+              <div className="glass-card rounded-2xl p-6 shadow-lg h-fit space-y-6">
+                <h3 className="text-base font-semibold text-white border-b border-gray-800 pb-3 flex items-center gap-2">
+                  <Plus size={16} className="text-pink-400" /> Create New Key
+                </h3>
+                <form onSubmit={handleGenerateKey} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-gray-400">API Key Name</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Production Logger, Testing Client"
+                      value={newKeyName}
+                      onChange={(e) => setNewKeyName(e.target.value)}
+                      className="w-full bg-[#0F172A] border border-[#222E45] focus:border-pink-500 focus:ring-1 focus:ring-pink-500 rounded-xl px-4 py-2.5 text-xs text-white placeholder-gray-500 transition-all outline-none"
+                      required
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isGeneratingKey}
+                    className="w-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-650 hover:to-rose-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all duration-300 hover:scale-[1.02] shadow-lg shadow-pink-500/10 disabled:opacity-50"
+                  >
+                    <Key size={14} />
+                    {isGeneratingKey ? 'Generating...' : 'Generate API Key'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Right Column: Registry */}
+              <div className="lg:col-span-2 glass-card rounded-2xl shadow-xl overflow-hidden flex flex-col">
+                <div className="p-4 bg-[#171E2E] border-b border-[#222E45] flex justify-between items-center">
+                  <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                    <Key size={16} className="text-pink-400" /> Active Keys Registry
+                  </h3>
+                  <span className="text-[10px] bg-pink-500/10 text-pink-400 px-2.5 py-0.5 rounded-full font-semibold">
+                    {apiKeys.length} Registered
+                  </span>
+                </div>
+
+                {apiKeys.length === 0 ? (
+                  <div className="py-20 text-center text-gray-500 text-xs flex-1 flex flex-col items-center justify-center gap-2 bg-[#171E2E]/10">
+                    <Key size={32} className="text-gray-600 opacity-40 mb-1" />
+                    No API keys generated yet. Create one to begin external integration.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto flex-1">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#222E45] bg-[#171E2E]/30 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                          <th className="py-2.5 px-4">Name</th>
+                          <th className="py-2.5 px-4">Prefix</th>
+                          <th className="py-2.5 px-4 text-center">Calls</th>
+                          <th className="py-2.5 px-4 text-center">Created At</th>
+                          <th className="py-2.5 px-4 text-center">Status</th>
+                          <th className="py-2.5 px-4 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1E293B] text-xs">
+                        {apiKeys.map((key: any) => (
+                          <tr key={key.id} className="hover:bg-[#1C2538]/30 transition-colors">
+                            <td className="py-2.5 px-4 font-semibold text-gray-300 truncate max-w-[120px]" title={key.name}>
+                              {key.name}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono text-gray-400">
+                              <code>{key.key_prefix}</code>
+                            </td>
+                            <td className="py-2.5 px-4 text-center font-mono text-indigo-400 font-semibold">
+                              {key.total_calls.toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-4 text-center text-gray-400">
+                              {new Date(key.created_at).toLocaleDateString()}
+                            </td>
+                            <td className="py-2.5 px-4 text-center">
+                              {key.is_active ? (
+                                <span className="inline-flex px-1.5 py-0.5 text-[9px] bg-emerald-500/10 text-emerald-400 rounded border border-emerald-500/20 font-bold uppercase tracking-wider">
+                                  Active
+                                </span>
+                              ) : (
+                                <span className="inline-flex px-1.5 py-0.5 text-[9px] bg-red-500/10 text-red-400 rounded border border-red-500/20 font-bold uppercase tracking-wider">
+                                  Inactive
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-4 text-right">
+                              <button
+                                onClick={() => handleRevokeKey(key.id)}
+                                className="p-1 text-red-400 hover:text-red-350 hover:bg-red-500/10 rounded-lg transition-colors"
+                                title="Revoke Key"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
             </div>
 
             {/* ====== DEVELOPER INTEGRATION explorer ====== */}
             <div className="glass-card rounded-2xl shadow-xl overflow-hidden animate-fade-in p-6 space-y-4">
               <div>
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <Settings size={18} className="text-indigo-400" /> Developer Integration API
+                  <Settings size={18} className="text-pink-400" /> Developer Integration API
                 </h3>
-                <p className="text-xs text-gray-500 mt-0.5">Integrate the real-time classification pipeline into your external microservices and scripts.</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Integrate the real-time classification pipeline into your external microservices and scripts by passing the <code>X-API-Key</code> header.
+                </p>
               </div>
 
-              <div className="flex gap-2 border-b border-[#222E45]/80 pb-2">
-                {['curl', 'python', 'node'].map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setDevTab(tab as 'curl' | 'python' | 'node')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all ${
-                      devTab === tab 
-                        ? 'bg-[#1E293B] text-indigo-400 border border-indigo-500/20' 
-                        : 'text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    {tab === 'node' ? 'Node.js' : tab}
-                  </button>
-                ))}
+              <div className="flex justify-between items-center border-b border-[#222E45]/80 pb-2">
+                <div className="flex gap-2">
+                  {['curl', 'python', 'node'].map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setDevTab(tab as 'curl' | 'python' | 'node')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all ${
+                        devTab === tab 
+                          ? 'bg-[#1E293B] text-pink-400 border border-pink-500/20' 
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {tab === 'node' ? 'Node.js' : tab}
+                    </button>
+                  ))}
+                </div>
+                
+                {apiKeys.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-gray-500">Inject prefix:</span>
+                    <select
+                      value={selectedKeyForSnippet}
+                      onChange={(e) => setSelectedKeyForSnippet(e.target.value)}
+                      className="bg-[#0F172A] border border-[#222E45] rounded-lg px-2 py-1 text-gray-300 text-xs focus:ring-1 focus:ring-pink-500 outline-none cursor-pointer"
+                    >
+                      <option value="">YOUR_API_KEY</option>
+                      {apiKeys.filter((k: any) => k.is_active).map((key: any) => (
+                        <option key={key.id} value={`${key.key_prefix}......`}>
+                          {key.name} ({key.key_prefix})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               <div className="bg-[#070A13] border border-[#242F4D]/50 rounded-xl p-4 font-mono text-xs text-gray-300 relative group max-h-[200px] overflow-y-auto">
-                {devTab === 'curl' && (
-                  <pre className="whitespace-pre-wrap">
-                    {`curl -X POST "http://localhost:8000/api/logs/classify?save_to_db=true" \\
+                <button
+                  onClick={() => {
+                    const el = document.getElementById('code-snippet-pre');
+                    if (el) {
+                      handleCopySnippet(el.innerText);
+                    }
+                  }}
+                  className="absolute top-3 right-3 px-2 py-1 bg-[#1E293B] hover:bg-[#2D3E5D] border border-gray-700/50 rounded-lg text-gray-355 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 text-[11px]"
+                  title="Copy Snippet"
+                >
+                  {copiedSnippet ? <><Check size={11} className="text-emerald-400" /> Copied</> : <><Copy size={11} /> Copy</>}
+                </button>
+                <pre id="code-snippet-pre" className="whitespace-pre-wrap">
+                  {devTab === 'curl' && (
+                    `curl -X POST "http://localhost:8000/api/logs/classify?save_to_db=true" \\
+  -H "X-API-Key: ${selectedKeyForSnippet || 'YOUR_API_KEY'}" \\
   -H "Content-Type: application/json" \\
-  -d '{"log_message": "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."}'`}
-                  </pre>
-                )}
-                {devTab === 'python' && (
-                  <pre className="whitespace-pre-wrap">
-                    {`import requests
+  -d '{"log_message": "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."}'`
+                  )}
+                  {devTab === 'python' && (
+                    `import requests
 
 url = "http://localhost:8000/api/logs/classify?save_to_db=true"
+headers = {
+    "X-API-Key": "${selectedKeyForSnippet || 'YOUR_API_KEY'}"
+}
 payload = {
     "log_message": "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."
 }
-response = requests.post(url, json=payload)
-print(response.json())`}
-                  </pre>
-                )}
-                {devTab === 'node' && (
-                  <pre className="whitespace-pre-wrap">
-                    {`fetch("http://localhost:8000/api/logs/classify?save_to_db=true", {
+response = requests.post(url, json=payload, headers=headers)
+print(response.json())`
+                  )}
+                  {devTab === 'node' && (
+                    `fetch("http://localhost:8000/api/logs/classify?save_to_db=true", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
+  headers: { 
+    "Content-Type": "application/json",
+    "X-API-Key": "${selectedKeyForSnippet || 'YOUR_API_KEY'}"
+  },
   body: JSON.stringify({
     log_message: "GET /api/v1/checkout status=500 response_time=150ms client=10.0.0.5."
   })
 })
 .then(res => res.json())
-.then(data => console.log(data));`}
-                  </pre>
-                )}
+.then(data => console.log(data));`
+                  )}
+                </pre>
               </div>
             </div>
 
@@ -1988,6 +2267,77 @@ print(response.json())`}
 
       </div>
 
+      {/* generatedKey success modal */}
+      {generatedKey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="glass-card w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden border border-gray-700/80 m-4 animate-scale-in">
+            <div className="p-5 bg-[#171E2E] border-b border-gray-800 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-white text-base">API Key Created Successfully</h3>
+                <p className="text-xs text-pink-400 font-semibold mt-0.5">Copy your key now – it won't be shown again</p>
+              </div>
+              <button 
+                onClick={() => setGeneratedKey(null)}
+                className="text-gray-450 hover:text-white hover:bg-white/5 p-1 rounded-lg transition-colors text-lg"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-6 space-y-6">
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex gap-3 text-xs text-amber-300">
+                <AlertCircle size={20} className="shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  <span className="font-bold block mb-1">Important Security Warning</span>
+                  For security reasons, we do not store the raw API key on our servers. 
+                  Once you close this dialog, you <strong>cannot retrieve it</strong>. 
+                  Please store it in a secure password manager or environment configuration.
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-gray-450">API Key Name</label>
+                <div className="text-sm font-semibold text-white bg-[#0F172A] px-4 py-2.5 rounded-xl border border-[#222E45]">
+                  {generatedKey.name}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-gray-450">Secret API Key Token</label>
+                <div className="flex gap-2">
+                  <div className="flex-1 bg-[#070A13] border border-[#242F4D]/50 rounded-xl p-3 font-mono text-sm text-gray-250 select-all break-all overflow-x-auto">
+                    <code>{generatedKey.raw_key}</code>
+                  </div>
+                  <button
+                    onClick={() => handleCopyKey(generatedKey.raw_key)}
+                    className="px-4 bg-[#1E293B] hover:bg-[#2D3E5D] border border-gray-700/50 rounded-xl text-gray-300 hover:text-white flex items-center justify-center transition-colors gap-1.5 text-xs font-semibold shrink-0"
+                    title="Copy Key to Clipboard"
+                  >
+                    {copiedKey ? (
+                      <>
+                        <Check size={14} className="text-emerald-400 animate-pulse" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={14} />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="p-4 bg-[#111728] border-t border-gray-800 flex justify-end">
+              <button
+                onClick={() => setGeneratedKey(null)}
+                className="px-5 py-2.5 bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-xs font-bold rounded-xl text-white transition-all shadow-lg hover:scale-[1.02]"
+              >
+                I've Saved the Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* inspectingVersion details modal */}
       {inspectingVersion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
