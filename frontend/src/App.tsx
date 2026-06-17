@@ -111,6 +111,37 @@ interface ActiveModel {
   message?: string;
 }
 
+interface TrainingMetrics {
+  // Core report (per-class metrics)
+  report?: Record<string, any>;
+  // Confusion matrix data
+  confusion_matrix?: number[][];
+  /** New format: ordered labels list (from worker.py) */
+  labels?: string[];
+  /** Legacy alias kept for backwards compat */
+  confusion_labels?: string[];
+  // Dataset split statistics (new format)
+  total_samples?: number;
+  bert_samples?: number;
+  excluded_regex?: number;
+  excluded_llm?: number;
+  train_samples?: number;
+  test_samples?: number;
+  // Label distributions
+  full_label_distribution?: Record<string, number>;
+  bert_label_distribution?: Record<string, number>;
+  // Training execution log (new format: plain string[]; legacy: {timestamp, message}[])
+  training_logs?: Array<string | { timestamp: string; message: string }>;
+  // Legacy fields (kept for backward compat with old model versions)
+  total_raw_records?: number;
+  bert_eligible_records?: number;
+  excluded_legacy_crm?: number;
+  train_size?: number;
+  test_size?: number;
+  label_distribution?: Record<string, number>;
+  accuracy?: number;
+}
+
 interface APIKeyData {
   id: number;
   name: string;
@@ -147,6 +178,7 @@ export default function App() {
   const [trainProgress, setTrainProgress] = useState<JobProgress>({ processed: 0, total: 100, status: '' });
   const [trainingLogs, setTrainingLogs] = useState<Array<{ timestamp: string; message: string }>>([]);
   const [isTraining, setIsTraining] = useState(false);
+  const [showTrainingLogs, setShowTrainingLogs] = useState(false);
 
   // Custom Regex Rule Form State
   const [newPattern, setNewPattern] = useState('');
@@ -574,6 +606,7 @@ export default function App() {
           setTimeout(() => {
             refetchActiveModel();
             refetchModelVersions();
+            setShowTrainingLogs(true);
           }, 1500);
           pollLogs();
         }
@@ -745,6 +778,7 @@ export default function App() {
             refetchModelVersions();
             refetchLogs();
             refetchStats();
+            setShowTrainingLogs(true);
           }, 1500);
           pollLogs();
         }
@@ -759,23 +793,29 @@ export default function App() {
     return logs.filter(l => l.user_corrected || (l.confidence !== null && l.confidence >= 0.8)).length;
   }, [logs]);
 
-  const inspectReportData = useMemo(() => {
-    if (!inspectingVersion || !inspectingVersion.metrics_json) return [];
+  const inspectParsedMetrics = useMemo((): TrainingMetrics | null => {
+    if (!inspectingVersion || !inspectingVersion.metrics_json) return null;
     try {
-      const parsed = JSON.parse(inspectingVersion.metrics_json);
-      return Object.keys(parsed)
-        .filter(key => key !== 'accuracy' && key !== 'macro avg' && key !== 'weighted avg')
-        .map(className => ({
-          name: className,
-          precision: parsed[className].precision,
-          recall: parsed[className].recall,
-          f1Score: parsed[className]['f1-score'],
-          support: parsed[className].support,
-        }));
-    } catch (e) {
-      return [];
+      return JSON.parse(inspectingVersion.metrics_json) as TrainingMetrics;
+    } catch {
+      return null;
     }
   }, [inspectingVersion]);
+
+  const inspectReportData = useMemo(() => {
+    if (!inspectParsedMetrics) return [];
+    // Support both new format {report: {...}} and old format {ClassName: {...}}
+    const src = inspectParsedMetrics.report ?? (inspectParsedMetrics as any);
+    return Object.keys(src)
+      .filter(key => key !== 'accuracy' && key !== 'macro avg' && key !== 'weighted avg')
+      .map(className => ({
+        name: className,
+        precision: src[className].precision,
+        recall: src[className].recall,
+        f1Score: src[className]['f1-score'],
+        support: src[className].support,
+      }));
+  }, [inspectParsedMetrics]);
 
   // Dynamic stats computations
   const stats = useMemo(() => {
@@ -928,17 +968,30 @@ export default function App() {
   };
 
   // Evaluation classification report format converter
+  // Supports both new {report: {...}} format and legacy {ClassName: {...}} format
+  const activeModelMetrics = useMemo((): TrainingMetrics | null => {
+    if (!activeModel || !activeModel.report) return null;
+    // activeModel.report is already parsed by the backend API
+    // It may be the full extended metrics object or just the classification report
+    if (activeModel.report && typeof activeModel.report === 'object') {
+      return activeModel.report as TrainingMetrics;
+    }
+    return null;
+  }, [activeModel]);
+
   const classReport = useMemo(() => {
     if (!activeModel || !activeModel.report) return [];
-
-    return Object.keys(activeModel.report)
+    // Support both new format (report nested) and old format (report at root)
+    const src = (activeModel.report?.report) ?? activeModel.report;
+    if (!src || typeof src !== 'object') return [];
+    return Object.keys(src)
       .filter(key => key !== 'accuracy' && key !== 'macro avg' && key !== 'weighted avg')
       .map(className => ({
         name: className,
-        precision: activeModel.report[className].precision,
-        recall: activeModel.report[className].recall,
-        f1Score: activeModel.report[className]['f1-score'],
-        support: activeModel.report[className].support,
+        precision: src[className]?.precision ?? 0,
+        recall: src[className]?.recall ?? 0,
+        f1Score: src[className]?.['f1-score'] ?? 0,
+        support: src[className]?.support ?? 0,
       }));
   }, [activeModel]);
 
@@ -1438,28 +1491,54 @@ export default function App() {
               </div>
 
               {/* Active model summary card */}
-              <div className="glass-card rounded-2xl p-6 shadow-lg space-y-4 animate-fade-in">
+              <div className="glass-card rounded-2xl p-5 shadow-lg space-y-3 animate-fade-in">
                 <h3 className="font-semibold text-white flex items-center gap-2 text-sm border-b border-gray-800 pb-2">
                   <CheckCircle size={16} className="text-emerald-400" /> Active Model Overview
                 </h3>
                 {activeModel && activeModel.version_tag ? (
-                  <div className="space-y-3 text-xs">
+                  <div className="space-y-2.5 text-xs">
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Active Tag:</span>
-                      <span className="font-mono font-bold text-gray-200">{activeModel.version_tag}</span>
+                      <span className="text-gray-400">Version Tag:</span>
+                      <span className="font-mono font-bold text-indigo-300 truncate max-w-[130px]" title={activeModel.version_tag}>{activeModel.version_tag}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Total Dataset:</span>
-                      <span className="font-semibold text-gray-200">{activeModel.num_records?.toLocaleString()} records</span>
+                      <span className="text-gray-400">BERT Records:</span>
+                      <span className="font-semibold text-gray-200">{activeModel.num_records?.toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Overall Accuracy:</span>
+                      <span className="text-gray-400">Accuracy:</span>
                       <span className="font-bold text-emerald-400">{((activeModel.accuracy ?? 0) * 100).toFixed(2)}%</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Trained Date:</span>
-                      <span className="text-gray-200">{new Date(activeModel.created_at || '').toLocaleString()}</span>
+                      <span className="text-gray-400">Trained:</span>
+                      <span className="text-gray-300">{new Date(activeModel.created_at || '').toLocaleDateString()}</span>
                     </div>
+                    {/* Dataset exclusion summary from extended metrics — supports new and legacy field names */}
+                    {activeModelMetrics && (activeModelMetrics.total_samples != null || activeModelMetrics.total_raw_records != null) && (
+                      <div className="pt-2 border-t border-gray-800/60 space-y-1.5">
+                        <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Dataset Breakdown</p>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Total Rows:</span>
+                          <span className="text-gray-300">{(activeModelMetrics.total_samples ?? activeModelMetrics.total_raw_records)?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">BERT Rows:</span>
+                          <span className="text-indigo-300">{(activeModelMetrics.bert_samples ?? activeModelMetrics.bert_eligible_records)?.toLocaleString() ?? '—'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Regex Excl.:</span>
+                          <span className="text-blue-400">{activeModelMetrics.excluded_regex ?? 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">LLM/CRM Excl.:</span>
+                          <span className="text-amber-400">{activeModelMetrics.excluded_llm ?? activeModelMetrics.excluded_legacy_crm ?? 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Train / Test:</span>
+                          <span className="text-indigo-300">{(activeModelMetrics.train_samples ?? activeModelMetrics.train_size ?? '—').toLocaleString?.()} / {(activeModelMetrics.test_samples ?? activeModelMetrics.test_size ?? '—').toLocaleString?.()}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-xs text-gray-500">No custom trained model is active.</p>
@@ -1544,9 +1623,9 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Scrollable Logs Console */}
-              {isTraining && (
-                <div className="bg-[#070A13] border border-[#242F4D] rounded-2xl shadow-xl overflow-hidden flex flex-col">
+              {/* Training Console — live during training, persistent (collapsible) after */}
+              {(isTraining || trainingLogs.length > 0) && (
+                <div className="bg-[#070A13] border border-[#242F4D] rounded-2xl shadow-xl overflow-hidden flex flex-col animate-fade-in">
                   <div className="p-3 bg-[#111728] border-b border-[#242F4D] flex justify-between items-center">
                     <div className="flex items-center gap-2">
                       <div className="flex gap-1.5">
@@ -1554,22 +1633,218 @@ export default function App() {
                         <span className="h-2.5 w-2.5 rounded-full bg-yellow-500/80" />
                         <span className="h-2.5 w-2.5 rounded-full bg-green-500/80" />
                       </div>
-                      <span className="text-xs font-mono font-semibold text-gray-400 ml-2">Training Console Logs</span>
+                      <span className="text-xs font-mono font-semibold text-gray-400 ml-2">training_console.log</span>
                     </div>
-                    <span className="text-[10px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded font-mono uppercase tracking-wide animate-pulse">Live Stream</span>
+                    <div className="flex items-center gap-2">
+                      {isTraining ? (
+                        <span className="text-[10px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded font-mono uppercase tracking-wide animate-pulse">● Live Stream</span>
+                      ) : (
+                        <button
+                          onClick={() => setShowTrainingLogs(v => !v)}
+                          className="text-[10px] bg-gray-700/40 hover:bg-gray-700/60 text-gray-400 hover:text-gray-200 px-2.5 py-0.5 rounded font-mono uppercase tracking-wide transition-colors"
+                        >
+                          {showTrainingLogs ? '▲ Collapse' : '▼ Expand Logs'}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div ref={terminalContainerRef} className="p-4 font-mono text-xs text-indigo-300/95 max-h-[200px] overflow-y-auto space-y-2 bg-[#090C16] h-[200px]">
-                    {trainingLogs.length === 0 ? (
-                      <div className="text-gray-500 italic">Console starting. Waiting for log output...</div>
-                    ) : (
-                      trainingLogs.map((log, index) => (
-                        <div key={index} className="flex gap-2">
-                          <span className="text-gray-600 select-none">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                          <span className="text-gray-200 break-all">{log.message}</span>
+                  {(isTraining || showTrainingLogs) && (
+                    <div ref={terminalContainerRef} className="p-4 font-mono text-xs max-h-[260px] overflow-y-auto space-y-1.5 bg-[#090C16]" style={{ minHeight: '120px' }}>
+                      {trainingLogs.length === 0 ? (
+                        <div className="text-gray-500 italic">Console starting. Waiting for log output...</div>
+                      ) : (
+                        trainingLogs.map((log, index) => {
+                          const isError = log.message.includes('ERROR') || log.message.includes('CRITICAL');
+                          const isSuccess = log.message.includes('complete') || log.message.includes('Accuracy') || log.message.includes('activated');
+                          const isSep = log.message.startsWith('─');
+                          return (
+                            <div key={index} className="flex gap-2 items-start">
+                              <span className="text-gray-600 select-none shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                              <span className={`break-all ${isError ? 'text-red-400' : isSuccess ? 'text-emerald-400' : isSep ? 'text-gray-600' : 'text-gray-300'}`}>
+                                {log.message}
+                              </span>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Confusion Matrix Card */}
+              {!isTraining && activeModelMetrics && activeModelMetrics.confusion_matrix && (activeModelMetrics.labels || activeModelMetrics.confusion_labels) && (
+                <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
+                  <div className="p-4 bg-[#171E2E] border-b border-[#222E45]">
+                    <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                      <Activity size={16} className="text-emerald-400" /> Confusion Matrix
+                      <span className="text-[10px] text-gray-500 font-normal ml-1">(True Label rows × Predicted Label columns)</span>
+                    </h3>
+                  </div>
+                  <div className="p-4 overflow-x-auto">
+                    {(() => {
+                      const labels = (activeModelMetrics.labels || activeModelMetrics.confusion_labels)!;
+                      const matrix = activeModelMetrics.confusion_matrix!;
+                      const maxVal = Math.max(...matrix.flat().filter(v => v > 0), 1);
+                      return (
+                        <div className="inline-block min-w-full">
+                          {/* Header row */}
+                          <div className="flex items-end mb-1" style={{ paddingLeft: '90px' }}>
+                            {labels.map((lbl, ci) => (
+                              <div
+                                key={ci}
+                                className="text-[9px] text-gray-500 font-semibold uppercase tracking-wide text-center overflow-hidden"
+                                style={{ width: '52px', minWidth: '52px' }}
+                                title={lbl}
+                              >
+                                <span className="block truncate px-0.5">{lbl.length > 7 ? lbl.slice(0, 6) + '…' : lbl}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {/* Matrix rows */}
+                          {matrix.map((row, ri) => (
+                            <div key={ri} className="flex items-center mb-0.5">
+                              {/* Row label (True) */}
+                              <div
+                                className="text-[9px] text-gray-500 font-semibold uppercase tracking-wide text-right pr-2 overflow-hidden shrink-0"
+                                style={{ width: '90px', minWidth: '90px' }}
+                                title={labels[ri]}
+                              >
+                                <span className="block truncate">{labels[ri].length > 11 ? labels[ri].slice(0, 10) + '…' : labels[ri]}</span>
+                              </div>
+                              {/* Cells */}
+                              {row.map((val, ci) => {
+                                const isDiag = ri === ci;
+                                const intensity = val > 0 ? Math.max(0.12, val / maxVal) : 0;
+                                let bgClass = '';
+                                let textClass = '';
+                                if (isDiag && val > 0) {
+                                  bgClass = `rgba(16,185,129,${intensity * 0.7})`;
+                                  textClass = 'text-emerald-300 font-bold';
+                                } else if (!isDiag && val > 0) {
+                                  bgClass = val / maxVal > 0.4 ? `rgba(239,68,68,${intensity * 0.7})` : `rgba(245,158,11,${intensity * 0.7})`;
+                                  textClass = val / maxVal > 0.4 ? 'text-red-300 font-semibold' : 'text-amber-300 font-semibold';
+                                } else {
+                                  bgClass = 'rgba(255,255,255,0.02)';
+                                  textClass = 'text-gray-700';
+                                }
+                                return (
+                                  <div
+                                    key={ci}
+                                    className={`flex items-center justify-center rounded text-xs font-mono transition-all ${textClass}`}
+                                    style={{
+                                      width: '52px',
+                                      minWidth: '52px',
+                                      height: '36px',
+                                      background: bgClass,
+                                      border: isDiag && val > 0 ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(255,255,255,0.04)',
+                                      marginRight: '2px',
+                                    }}
+                                    title={`True: ${labels[ri]} → Pred: ${labels[ci]} = ${val}`}
+                                  >
+                                    {val > 0 ? val : <span className="opacity-30">·</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                          <p className="text-[10px] text-gray-600 mt-3 text-center">
+                            <span className="inline-block w-3 h-3 rounded-sm bg-emerald-500/40 mr-1 align-middle" />Correct &nbsp;
+                            <span className="inline-block w-3 h-3 rounded-sm bg-red-500/40 mr-1 align-middle ml-3" />High error &nbsp;
+                            <span className="inline-block w-3 h-3 rounded-sm bg-amber-500/40 mr-1 align-middle ml-3" />Low error
+                          </p>
                         </div>
-                      ))
-                    )}
+                      );
+                    })()}
                   </div>
+                </div>
+              )}
+
+              {/* Dataset Statistics Card — shows after training using new metrics fields */}
+              {!isTraining && activeModelMetrics && (activeModelMetrics.total_samples != null) && (
+                <div className="glass-card rounded-2xl shadow-lg p-5 animate-fade-in space-y-4">
+                  <h3 className="font-semibold text-white text-sm flex items-center gap-2 border-b border-gray-800 pb-2">
+                    <Database size={16} className="text-cyan-400" /> Training Dataset Statistics
+                  </h3>
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30 text-center">
+                      <span className="text-gray-400 block mb-1 text-[10px] uppercase tracking-wider">Total Rows</span>
+                      <span className="text-white font-mono font-bold text-base">{activeModelMetrics.total_samples?.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-indigo-500/5 p-3 rounded-xl border border-indigo-500/20 text-center">
+                      <span className="text-indigo-300 block mb-1 text-[10px] uppercase tracking-wider">BERT Rows</span>
+                      <span className="text-indigo-400 font-mono font-bold text-base">{activeModelMetrics.bert_samples?.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-emerald-500/5 p-3 rounded-xl border border-emerald-500/20 text-center">
+                      <span className="text-emerald-300 block mb-1 text-[10px] uppercase tracking-wider">Accuracy</span>
+                      <span className="text-emerald-400 font-mono font-bold text-base">{((activeModelMetrics.accuracy ?? activeModel?.accuracy ?? 0) * 100).toFixed(2)}%</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="bg-blue-500/5 p-2.5 rounded-xl border border-blue-500/20 text-center">
+                      <span className="text-blue-300 block text-[10px] mb-0.5">Excl. Regex</span>
+                      <span className="text-blue-400 font-mono font-bold">{activeModelMetrics.excluded_regex?.toLocaleString() ?? 0}</span>
+                    </div>
+                    <div className="bg-amber-500/5 p-2.5 rounded-xl border border-amber-500/20 text-center">
+                      <span className="text-amber-300 block text-[10px] mb-0.5">Excl. LLM/CRM</span>
+                      <span className="text-amber-400 font-mono font-bold">{(activeModelMetrics.excluded_llm)?.toLocaleString() ?? 0}</span>
+                    </div>
+                    <div className="bg-emerald-500/5 p-2.5 rounded-xl border border-emerald-500/20 text-center">
+                      <span className="text-emerald-300 block text-[10px] mb-0.5">Train Samples</span>
+                      <span className="text-emerald-400 font-mono font-bold">{activeModelMetrics.train_samples?.toLocaleString() ?? '—'}</span>
+                    </div>
+                    <div className="bg-purple-500/5 p-2.5 rounded-xl border border-purple-500/20 text-center">
+                      <span className="text-purple-300 block text-[10px] mb-0.5">Test Samples</span>
+                      <span className="text-purple-400 font-mono font-bold">{activeModelMetrics.test_samples?.toLocaleString() ?? '—'}</span>
+                    </div>
+                  </div>
+                  {activeModelMetrics.bert_label_distribution && (
+                    <div className="space-y-4 pt-2 border-t border-gray-800/40">
+                      {activeModelMetrics.full_label_distribution && (
+                        <div className="space-y-2">
+                          <h4 className="text-[10px] font-semibold text-gray-400/80 uppercase tracking-wider">Raw Dataset Label Distribution</h4>
+                          {Object.entries(activeModelMetrics.full_label_distribution)
+                            .sort(([, a], [, b]) => (b as number) - (a as number))
+                            .map(([label, count]) => {
+                              const total = (activeModelMetrics.total_samples as number) || 1;
+                              const pct = Math.round(((count as number) / total) * 100);
+                              return (
+                                <div key={label} className="space-y-0.5">
+                                  <div className="flex justify-between text-[11px]">
+                                    <span className="text-gray-400 truncate max-w-[65%]" title={label}>{label}</span>
+                                    <span className="text-gray-500 font-mono">{(count as number).toLocaleString()} <span className="text-gray-600">({pct}%)</span></span>
+                                  </div>
+                                  <div className="w-full bg-gray-800/30 rounded-full h-1">
+                                    <div className="bg-cyan-600 h-1 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                      
+                      <div className="space-y-2 pt-2 border-t border-gray-850">
+                        <h4 className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">BERT Training Label Distribution</h4>
+                        {Object.entries(activeModelMetrics.bert_label_distribution)
+                          .sort(([, a], [, b]) => (b as number) - (a as number))
+                          .map(([label, count]) => {
+                            const total = (activeModelMetrics.bert_samples as number) || 1;
+                            const pct = Math.round(((count as number) / total) * 100);
+                            return (
+                              <div key={label} className="space-y-0.5">
+                                <div className="flex justify-between text-[11px]">
+                                  <span className="text-gray-350 truncate max-w-[65%]" title={label}>{label}</span>
+                                  <span className="text-gray-400 font-mono">{(count as number).toLocaleString()} <span className="text-gray-600">({pct}%)</span></span>
+                                </div>
+                                <div className="w-full bg-gray-800/50 rounded-full h-1">
+                                  <div className="bg-indigo-500 h-1 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1578,7 +1853,7 @@ export default function App() {
                 <div className="glass-card rounded-2xl shadow-lg overflow-hidden animate-fade-in">
                   <div className="p-4 bg-[#171E2E] border-b border-[#222E45]">
                     <h3 className="font-semibold text-white text-sm flex items-center gap-2">
-                      <Activity size={16} className="text-purple-400" /> Active Model Classification Report
+                      <Activity size={16} className="text-purple-400" /> Active Model — Per-Class F1 Report
                     </h3>
                   </div>
                   <div className="overflow-x-auto">
@@ -1737,20 +2012,20 @@ export default function App() {
                 <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.celery_worker === 'active' ? 'bg-emerald-500 animate-pulse-subtle' : 'bg-red-500'}`} />
               </div>
 
-              {/* groq */}
+              {/* local nli model status */}
               <div className="glass-card glass-card-hover rounded-2xl p-5 shadow-lg flex items-center justify-between group">
                 <div className="flex items-center space-x-3">
                   <div className={`p-2.5 rounded-xl transition-all duration-300 group-hover:scale-105 ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
                     <Activity size={22} />
                   </div>
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Groq API Key</h4>
+                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Local NLI Model</h4>
                     <p className="text-sm font-bold text-white mt-0.5 capitalize">
-                      {systemStatus?.groq_api === 'configured' ? 'Configured' : 'Not Configured'}
+                      {systemStatus?.groq_api === 'configured' ? 'Active & Ready' : 'Inactive'}
                     </p>
                   </div>
                 </div>
-                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse-subtle'}`} />
+                <span className={`h-2.5 w-2.5 rounded-full ${systemStatus?.groq_api === 'configured' ? 'bg-emerald-500 animate-pulse-subtle' : 'bg-amber-500'}`} />
               </div>
 
             </div>
@@ -1855,7 +2130,7 @@ export default function App() {
                     {/* LLM usage */}
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs font-medium">
-                        <span className="text-purple-400 flex items-center gap-1"><Database size={12} /> Groq LLM (Fallback / Legacy)</span>
+                        <span className="text-purple-400 flex items-center gap-1"><Database size={12} /> Local NLI (Fallback / Legacy)</span>
                         <span className="text-white font-bold">{stats.llm.count} logs ({stats.llm.percent}%)</span>
                       </div>
                       <div className="w-full bg-gray-800 rounded-full h-2">
@@ -2341,7 +2616,7 @@ print(response.json())`
       {/* inspectingVersion details modal */}
       {inspectingVersion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="glass-card w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden border border-gray-700/80 m-4 animate-scale-in">
+          <div className="glass-card w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden border border-gray-700/80 m-4 animate-scale-in">
             <div className="p-5 bg-[#171E2E] border-b border-gray-800 flex justify-between items-center">
               <div>
                 <h3 className="font-bold text-white text-base">Model Version Details</h3>
@@ -2354,14 +2629,15 @@ print(response.json())`
                 ✕
               </button>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+            <div className="p-6 space-y-5 overflow-y-auto max-h-[70vh]">
+              {/* Top stats grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
-                  <span className="text-gray-400 block mb-0.5">Records Used</span>
+                  <span className="text-gray-400 block mb-0.5">BERT Records</span>
                   <span className="text-white font-mono font-bold">{inspectingVersion.num_records.toLocaleString()}</span>
                 </div>
                 <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
-                  <span className="text-gray-400 block mb-0.5">Overall Accuracy</span>
+                  <span className="text-gray-400 block mb-0.5">Accuracy</span>
                   <span className="text-emerald-400 font-mono font-bold">{(inspectingVersion.accuracy * 100).toFixed(2)}%</span>
                 </div>
                 <div className="bg-[#182030]/50 p-3 rounded-xl border border-[#2D3E5D]/30">
@@ -2374,11 +2650,144 @@ print(response.json())`
                 </div>
               </div>
 
+              {/* Extended Dataset Statistics — supports both new and legacy field names */}
+              {inspectParsedMetrics && (inspectParsedMetrics.total_samples != null || inspectParsedMetrics.total_raw_records != null) && (
+                <div className="border border-gray-800/80 rounded-xl overflow-hidden">
+                  <div className="p-3 bg-[#171E2E]/40 border-b border-gray-800/80">
+                    <h4 className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                      <Database size={13} className="text-indigo-400" /> Dataset Statistics
+                    </h4>
+                  </div>
+                  <div className="p-3 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Total Rows Loaded</span>
+                      <span className="text-white font-mono font-semibold">{(inspectParsedMetrics.total_samples ?? inspectParsedMetrics.total_raw_records)?.toLocaleString()}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">BERT Training Rows</span>
+                      <span className="text-indigo-300 font-mono font-semibold">{(inspectParsedMetrics.bert_samples ?? inspectParsedMetrics.bert_eligible_records)?.toLocaleString() ?? '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Accuracy</span>
+                      <span className="text-emerald-400 font-mono font-semibold">{((inspectParsedMetrics.accuracy ?? 0) * 100).toFixed(2)}%</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Excluded (Regex)</span>
+                      <span className="text-blue-400 font-mono font-semibold">{inspectParsedMetrics.excluded_regex ?? 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Excluded (LLM/CRM)</span>
+                      <span className="text-amber-400 font-mono font-semibold">{inspectParsedMetrics.excluded_llm ?? inspectParsedMetrics.excluded_legacy_crm ?? 0}</span>
+                    </div>
+                    <div className="col-span-2 sm:col-span-1">
+                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Train / Test Split</span>
+                      <span className="text-gray-200 font-mono">
+                        {(inspectParsedMetrics.train_samples ?? inspectParsedMetrics.train_size ?? '—').toLocaleString?.()} / {(inspectParsedMetrics.test_samples ?? inspectParsedMetrics.test_size ?? '—').toLocaleString?.()}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Label Distributions */}
+                  {inspectParsedMetrics.bert_label_distribution && (
+                    <div className="px-3 pb-3 space-y-4">
+                      {inspectParsedMetrics.full_label_distribution && (
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Raw Dataset Label Distribution</p>
+                          {Object.entries(inspectParsedMetrics.full_label_distribution)
+                            .sort(([, a], [, b]) => (b as number) - (a as number))
+                            .map(([lbl, cnt]) => {
+                              const total = (inspectParsedMetrics.total_samples ?? 1) as number;
+                              const pct = Math.round(((cnt as number) / total) * 100);
+                              return (
+                                <div key={lbl}>
+                                  <div className="flex justify-between text-[10px] mb-0.5">
+                                    <span className="text-gray-400 truncate max-w-[60%]" title={lbl}>{lbl}</span>
+                                    <span className="text-gray-500 font-mono">{(cnt as number).toLocaleString()} ({pct}%)</span>
+                                  </div>
+                                  <div className="w-full bg-gray-800/50 rounded-full h-1">
+                                    <div className="bg-cyan-600 h-1 rounded-full" style={{ width: `${pct}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                      
+                      <div className="space-y-1.5 pt-2 border-t border-gray-800/20">
+                        <p className="text-[10px] font-semibold text-gray-450 uppercase tracking-wider mb-1">BERT Label Distribution</p>
+                        {Object.entries(inspectParsedMetrics.bert_label_distribution)
+                          .sort(([, a], [, b]) => (b as number) - (a as number))
+                          .map(([lbl, cnt]) => {
+                            const total = (inspectParsedMetrics.bert_samples ?? inspectParsedMetrics.bert_eligible_records ?? 1) as number;
+                            const pct = Math.round(((cnt as number) / total) * 100);
+                            return (
+                              <div key={lbl}>
+                                <div className="flex justify-between text-[10px] mb-0.5">
+                                  <span className="text-gray-300 truncate max-w-[60%]" title={lbl}>{lbl}</span>
+                                  <span className="text-gray-500 font-mono">{(cnt as number).toLocaleString()} ({pct}%)</span>
+                                </div>
+                                  <div className="w-full bg-gray-800/50 rounded-full h-1">
+                                    <div className="bg-indigo-500 h-1 rounded-full" style={{ width: `${pct}%` }} />
+                                  </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Confusion Matrix — supports both new (labels) and legacy (confusion_labels) */}
+              {inspectParsedMetrics && inspectParsedMetrics.confusion_matrix && (inspectParsedMetrics.labels || inspectParsedMetrics.confusion_labels) && (
+                <div className="border border-gray-800/80 rounded-xl overflow-hidden">
+                  <div className="p-3 bg-[#171E2E]/40 border-b border-gray-800/80">
+                    <h4 className="text-xs font-semibold text-gray-300">Confusion Matrix <span className="text-[10px] font-normal text-gray-600">(True rows × Predicted cols)</span></h4>
+                  </div>
+                  <div className="p-3 overflow-x-auto">
+                    {(() => {
+                      const labels = (inspectParsedMetrics.labels || inspectParsedMetrics.confusion_labels)!;
+                      const matrix = inspectParsedMetrics.confusion_matrix!;
+                      const maxVal = Math.max(...matrix.flat().filter(v => v > 0), 1);
+                      return (
+                        <div className="inline-block">
+                          <div className="flex items-end mb-1" style={{ paddingLeft: '80px' }}>
+                            {labels.map((lbl, ci) => (
+                              <div key={ci} className="text-[9px] text-gray-500 font-semibold uppercase tracking-wide text-center overflow-hidden" style={{ width: '46px', minWidth: '46px' }} title={lbl}>
+                                <span className="block truncate px-0.5">{lbl.length > 6 ? lbl.slice(0, 5) + '…' : lbl}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {matrix.map((row, ri) => (
+                            <div key={ri} className="flex items-center mb-0.5">
+                              <div className="text-[9px] text-gray-500 font-semibold text-right pr-2 overflow-hidden shrink-0" style={{ width: '80px', minWidth: '80px' }} title={labels[ri]}>
+                                <span className="block truncate">{labels[ri].length > 10 ? labels[ri].slice(0, 9) + '…' : labels[ri]}</span>
+                              </div>
+                              {row.map((val, ci) => {
+                                const isDiag = ri === ci;
+                                const intensity = val > 0 ? Math.max(0.15, val / maxVal) : 0;
+                                const bg = isDiag && val > 0 ? `rgba(16,185,129,${intensity * 0.7})` : !isDiag && val > 0 ? (val / maxVal > 0.4 ? `rgba(239,68,68,${intensity * 0.7})` : `rgba(245,158,11,${intensity * 0.7})`) : 'rgba(255,255,255,0.02)';
+                                const tc = isDiag && val > 0 ? 'text-emerald-300 font-bold' : !isDiag && val > 0 ? (val / maxVal > 0.4 ? 'text-red-300 font-semibold' : 'text-amber-300') : 'text-gray-700';
+                                return (
+                                  <div key={ci} className={`flex items-center justify-center rounded text-xs font-mono ${tc}`} style={{ width: '46px', minWidth: '46px', height: '32px', background: bg, border: isDiag && val > 0 ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(255,255,255,0.04)', marginRight: '2px' }} title={`True: ${labels[ri]} → Pred: ${labels[ci]} = ${val}`}>
+                                    {val > 0 ? val : <span className="opacity-30">·</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Classification Report */}
               <div className="border border-gray-800/80 rounded-xl overflow-hidden">
                 <div className="p-3 bg-[#171E2E]/40 border-b border-gray-800/80">
-                  <h4 className="text-xs font-semibold text-gray-300">Classification Report Metrics</h4>
+                  <h4 className="text-xs font-semibold text-gray-300">Per-Class Classification Report</h4>
                 </div>
-                <div className="overflow-x-auto max-h-[240px]">
+                <div className="overflow-x-auto max-h-[200px]">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-[#222E45]/80 bg-[#171E2E]/20 text-[10px] font-bold text-gray-400 uppercase">
@@ -2409,6 +2818,43 @@ print(response.json())`
                   </table>
                 </div>
               </div>
+
+              {/* Training Execution Logs — supports both new (string[]) and legacy ({timestamp, message}[]) formats */}
+              {inspectParsedMetrics && inspectParsedMetrics.training_logs && inspectParsedMetrics.training_logs.length > 0 && (
+                <div className="border border-[#242F4D] rounded-xl overflow-hidden bg-[#070A13]">
+                  <div className="p-3 bg-[#111728] border-b border-[#242F4D] flex items-center gap-2">
+                    <div className="flex gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-red-500/70" />
+                      <span className="h-2 w-2 rounded-full bg-yellow-500/70" />
+                      <span className="h-2 w-2 rounded-full bg-green-500/70" />
+                    </div>
+                    <span className="text-[11px] font-mono font-semibold text-gray-400 ml-1">training_console.log</span>
+                    <span className="ml-auto text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded font-mono uppercase">Complete</span>
+                  </div>
+                  <div className="p-3 font-mono text-[11px] max-h-[220px] overflow-y-auto space-y-1 bg-[#090C16]">
+                    {inspectParsedMetrics.training_logs.map((log, idx) => {
+                      // Support both new format (plain string) and legacy {timestamp, message} object
+                      const msg = typeof log === 'string' ? log : (log as any).message;
+                      const isError = msg.includes('ERROR') || msg.includes('CRITICAL');
+                      const isSuccess = msg.includes('complete') || msg.includes('Accuracy') || msg.includes('activated');
+                      const isStep = msg.match(/^\[\d\/5\]/);
+                      const isSep = msg.startsWith('=') || msg.startsWith('─');
+                      return (
+                        <div key={idx} className="flex gap-2 items-start">
+                          <span className="text-gray-700 select-none shrink-0 text-[10px] mt-0.5">›</span>
+                          <span className={`break-all ${
+                            isError ? 'text-red-400' :
+                            isSuccess ? 'text-emerald-400 font-semibold' :
+                            isStep ? 'text-cyan-400 font-semibold' :
+                            isSep ? 'text-gray-700' :
+                            'text-gray-400'
+                          }`}>{msg}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="p-4 bg-[#111728] border-t border-gray-800 flex justify-end gap-2">
               <button

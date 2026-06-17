@@ -366,7 +366,8 @@ def get_system_status(session: Session = Depends(get_session)):
     except Exception:
         pass
 
-    llm_configured = bool(settings.GROQ_API_KEY and settings.GROQ_API_KEY.strip())
+    # Local zero-shot NLI classifier is used instead of Groq, which is always available
+    llm_configured = True
 
     return {
         "database": "healthy" if db_ok else "unhealthy",

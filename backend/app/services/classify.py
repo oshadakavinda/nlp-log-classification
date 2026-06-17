@@ -1,7 +1,7 @@
 import re
 from app.services.processor_regex import classify_with_regex
 from app.services.processor_bert import classify_with_bert, classify_with_bert_with_confidence
-from app.services.processor_llm import classify_with_llm
+from app.services.processor_llm import classify_with_llm, classify_with_llm_with_confidence
 
 def infer_source(log_msg: str) -> str:
     """
@@ -47,13 +47,18 @@ def classify(logs):
 
 def classify_log(source, log_msg):
     if source == "LegacyCRM":
-        label = classify_with_llm(log_msg)
-        return label, "LLM", 1.0
+        label, confidence = classify_with_llm_with_confidence(log_msg)
+        return label, "LLM", confidence
     else:
         label = classify_with_regex(log_msg)
         if label:
             return label, "Regex", 1.0
         label, confidence = classify_with_bert_with_confidence(log_msg)
+        if label == "Unclassified" or confidence < 0.5:
+            # Fallback to local zero-shot NLI (LLM)
+            fallback_label, fallback_conf = classify_with_llm_with_confidence(log_msg)
+            if fallback_label != "Unclassified":
+                return fallback_label, "LLM", fallback_conf
         return label, "ML", confidence
 
 def classify_csv(input_file):

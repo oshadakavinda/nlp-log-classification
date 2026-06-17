@@ -1,48 +1,66 @@
-from dotenv import load_dotenv
-from groq import Groq
-import json
-import re
+from transformers import pipeline
+
+# Load zero-shot classification model locally (no API needed)
+# facebook/bart-large-mnli is the most accurate zero-shot classifier
+classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+)
+
+CANDIDATE_LABELS = ["workflow error", "deprecation warning"]
+HYPOTHESIS_TEMPLATE = "This log message describes a {}."
+LABEL_MAPPING = {
+    "workflow error": "Workflow Error",
+    "deprecation warning": "Deprecation Warning"
+}
 
 
-load_dotenv()
+def classify_with_llm_with_confidence(log_msg):
+    """
+    Classify log messages using a local zero-shot NLI model and return both
+    the label and the confidence score.
+    """
+    try:
+        result = classifier(
+            log_msg,
+            CANDIDATE_LABELS,
+            hypothesis_template=HYPOTHESIS_TEMPLATE,
+            multi_label=True
+        )
+        top_label = result["labels"][0]
+        top_score = float(result["scores"][0])
 
-groq = Groq()
+        # Use 0.5 threshold to filter out unrelated logs (Unclassified)
+        if top_score < 0.5:
+            return "Unclassified", top_score
+
+        return LABEL_MAPPING[top_label], top_score
+    except Exception as e:
+        print(f"Error during local NLI classification: {e}")
+        return "Unclassified", 0.0
+
 
 def classify_with_llm(log_msg):
     """
-    Generate a variant of the input sentence. For example,
-    If input sentence is "User session timed out unexpectedly, user ID: 9250.",
-    variant would be "Session timed out for user 9251"
+    Classify log messages using a local zero-shot NLI model.
+    No API key or internet connection needed at inference time.
+
+    Categories: Workflow Error, Deprecation Warning, or Unclassified.
     """
-    prompt = f'''Classify the log message into one of these categories: 
-    (1) Workflow Error, (2) Deprecation Warning.
-    If you can't figure out a category, use "Unclassified".
-    Put the category inside <category> </category> tags. 
-    Log message: {log_msg}'''
-
-    try:
-        chat_completion = groq.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            # model="llama-3.3-70b-versatile",
-            model="deepseek-r1-distill-llama-70b",
-            temperature=0.5
-        )
-
-        content = chat_completion.choices[0].message.content
-        match = re.search(r'<category>(.*)<\/category>', content, flags=re.DOTALL)
-        category = "Unclassified"
-        if match:
-            category = match.group(1)
-
-        return category
-    except Exception as e:
-        print(f"Error during LLM classification: {e}")
-        return "Unclassified"
+    label, _ = classify_with_llm_with_confidence(log_msg)
+    return label
 
 
 if __name__ == "__main__":
-    print(classify_with_llm(
-        "Case escalation for ticket ID 7324 failed because the assigned support agent is no longer active."))
-    print(classify_with_llm(
-        "The 'ReportGenerator' module will be retired in version 4.0. Please migrate to the 'AdvancedAnalyticsSuite' by Dec 2025"))
-    print(classify_with_llm("System reboot initiated by user 12345."))
+    test_logs = [
+        "Case escalation for ticket ID 7324 failed because the assigned support agent is no longer active.",
+        "The 'ReportGenerator' module will be retired in version 4.0. Please migrate to the 'AdvancedAnalyticsSuite' by Dec 2025",
+        "System reboot initiated by user 12345.",
+        "Invoice generation process aborted for order ID 8910 due to invalid tax calculation module.",
+        "The 'BulkEmailSender' feature is no longer supported. Use 'EmailCampaignManager' for improved functionality.",
+        "Lead conversion failed for prospect ID 7842 due to missing contact information.",
+        "API endpoint 'getCustomerDetails' is deprecated and will be removed in version 3.2. Use 'fetchCustomerInfo' instead.",
+    ]
+    for log in test_logs:
+        label = classify_with_llm(log)
+        print(f"{label:25s} <- {log[:80]}")

@@ -52,5 +52,14 @@ services:
       - redis
       - api
 
+  trainer:
+    build:
+      context: ./backend
+    command: python training/train_model.py --data-dir training/dataset --output-dir models
+    volumes:
+      - ./backend:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
 volumes:
   postgres_data:
