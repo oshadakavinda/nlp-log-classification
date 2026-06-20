@@ -21,7 +21,8 @@ import re
 
 router = APIRouter()
 
-UPLOAD_DIR = "/app/uploads"
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+UPLOAD_DIR = os.path.join(backend_dir, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 

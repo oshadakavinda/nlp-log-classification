@@ -26,7 +26,11 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND
 )
 
-redis_client = redis.from_url(settings.CELERY_BROKER_URL)
+if settings.CELERY_BROKER_URL.startswith("redis"):
+    redis_client = redis.from_url(settings.CELERY_BROKER_URL)
+else:
+    from app.core.redis_mock import SQLiteRedisMock
+    redis_client = SQLiteRedisMock()
 
 # Common aliases for the required CSV columns.
 # The first match found (in order) is used.
