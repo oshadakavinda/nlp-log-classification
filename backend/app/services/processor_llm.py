@@ -1,3 +1,4 @@
+import os
 from dotenv import load_dotenv
 from groq import Groq
 import json
@@ -6,7 +7,24 @@ import re
 
 load_dotenv()
 
-groq = Groq()
+_groq_client = None
+
+def get_groq_client():
+    global _groq_client
+    if _groq_client is not None:
+        return _groq_client
+    
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key or not api_key.strip():
+        return None
+        
+    try:
+        _groq_client = Groq(api_key=api_key)
+        return _groq_client
+    except Exception as e:
+        print(f"Error initializing Groq client: {e}")
+        return None
+
 
 def classify_with_llm(log_msg):
     """
@@ -14,6 +32,10 @@ def classify_with_llm(log_msg):
     If input sentence is "User session timed out unexpectedly, user ID: 9250.",
     variant would be "Session timed out for user 9251"
     """
+    groq = get_groq_client()
+    if not groq:
+        return "Unclassified"
+
     prompt = f'''Classify the log message into one of these categories: 
     (1) Workflow Error, (2) Deprecation Warning.
     If you can't figure out a category, use "Unclassified".
@@ -32,7 +54,7 @@ def classify_with_llm(log_msg):
         match = re.search(r'<category>(.*)<\/category>', content, flags=re.DOTALL)
         category = "Unclassified"
         if match:
-            category = match.group(1)
+            category = match.group(1).strip()
 
         return category
     except Exception as e:
