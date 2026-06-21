@@ -54,6 +54,8 @@ interface LogEntry {
 
 interface LogsResponse {
   total: number;
+  page: number;
+  page_size: number;
   logs: LogEntry[];
 }
 
@@ -123,8 +125,6 @@ interface TrainingMetrics {
   // Dataset split statistics (new format)
   total_samples?: number;
   bert_samples?: number;
-  excluded_regex?: number;
-  excluded_llm?: number;
   train_samples?: number;
   test_samples?: number;
   // Label distributions
@@ -196,6 +196,10 @@ export default function App() {
   const [methodFilter, setMethodFilter] = useState('all');
   const [labelFilter, setLabelFilter] = useState('all');
 
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 50;
+
   // Live Activity Monitoring Feed State
   const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
 
@@ -208,13 +212,15 @@ export default function App() {
   const simulatorIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // API Queries
-  const { data: logsData = { total: 0, logs: [] }, refetch: refetchLogs } = useQuery<LogsResponse>({
-    queryKey: ['logs', searchTerm, methodFilter, labelFilter],
+  const { data: logsData = { total: 0, page: 1, page_size: pageSize, logs: [] }, refetch: refetchLogs } = useQuery<LogsResponse>({
+    queryKey: ['logs', searchTerm, methodFilter, labelFilter, currentPage],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (searchTerm) params.append('search', searchTerm);
       if (methodFilter !== 'all') params.append('method', methodFilter);
       if (labelFilter !== 'all') params.append('label', labelFilter);
+      params.append('page', String(currentPage));
+      params.append('page_size', String(pageSize));
 
       const response = await fetch(`http://localhost:8000/api/logs?${params.toString()}`);
       if (!response.ok) throw new Error('Failed to fetch logs');
@@ -1199,7 +1205,7 @@ export default function App() {
                         type="text"
                         placeholder="Search logs by message or source..."
                         value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
+                        onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
                         className="w-full bg-[#1C2538] text-white pl-10 pr-4 py-2 rounded-xl text-sm border border-[#2D3E5D] focus:outline-none focus:border-blue-500 transition-colors"
                       />
                     </div>
@@ -1209,7 +1215,7 @@ export default function App() {
                         <Filter size={14} />
                         <select
                           value={methodFilter}
-                          onChange={(e) => setMethodFilter(e.target.value)}
+                          onChange={(e) => { setMethodFilter(e.target.value); setCurrentPage(1); }}
                           className="bg-transparent text-gray-200 focus:outline-none cursor-pointer text-xs"
                         >
                           <option value="all" className="bg-[#1C2538]">All Methods</option>
@@ -1223,7 +1229,7 @@ export default function App() {
                         <Filter size={14} />
                         <select
                           value={labelFilter}
-                          onChange={(e) => setLabelFilter(e.target.value)}
+                          onChange={(e) => { setLabelFilter(e.target.value); setCurrentPage(1); }}
                           className="bg-transparent text-gray-200 focus:outline-none cursor-pointer text-xs"
                         >
                           <option value="all" className="bg-[#1C2538]">All Labels</option>
@@ -1387,18 +1393,42 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Footer */}
+                  {/* Footer with Pagination */}
                   <div className="p-3 bg-[#171E2E]/60 border-t border-[#222E45] text-xs text-gray-400 flex justify-between items-center">
                     <span>
                       Showing {filteredLogs.length} of {totalMatchingLogsCount.toLocaleString()} matching logs (Total stored: {logStats.total.toLocaleString()})
                     </span>
-                    <button
-                      onClick={handleClearLogs}
-                      disabled={logStats.total === 0}
-                      className="text-red-400/80 hover:text-red-400 font-medium disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-all"
-                    >
-                      <Trash2 size={13} /> Clear Stored Logs
-                    </button>
+                    <div className="flex items-center gap-3">
+                      {/* Pagination Controls */}
+                      {totalMatchingLogsCount > pageSize && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage <= 1}
+                            className="px-2 py-1 rounded bg-[#1E293B] text-gray-300 hover:bg-indigo-500/20 hover:text-indigo-300 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-[#222E45]"
+                          >
+                            ← Prev
+                          </button>
+                          <span className="text-gray-300 font-medium">
+                            Page {currentPage} of {Math.ceil(totalMatchingLogsCount / pageSize)}
+                          </span>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.min(Math.ceil(totalMatchingLogsCount / pageSize), p + 1))}
+                            disabled={currentPage >= Math.ceil(totalMatchingLogsCount / pageSize)}
+                            className="px-2 py-1 rounded bg-[#1E293B] text-gray-300 hover:bg-indigo-500/20 hover:text-indigo-300 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-[#222E45]"
+                          >
+                            Next →
+                          </button>
+                        </div>
+                      )}
+                      <button
+                        onClick={handleClearLogs}
+                        disabled={logStats.total === 0}
+                        className="text-red-400/80 hover:text-red-400 font-medium disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-all"
+                      >
+                        <Trash2 size={13} /> Clear Stored Logs
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1525,14 +1555,7 @@ export default function App() {
                           <span className="text-gray-500">BERT Rows:</span>
                           <span className="text-indigo-300">{(activeModelMetrics.bert_samples ?? activeModelMetrics.bert_eligible_records)?.toLocaleString() ?? '—'}</span>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-500">Regex Excl.:</span>
-                          <span className="text-blue-400">{activeModelMetrics.excluded_regex ?? 0}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-500">LLM/CRM Excl.:</span>
-                          <span className="text-amber-400">{activeModelMetrics.excluded_llm ?? activeModelMetrics.excluded_legacy_crm ?? 0}</span>
-                        </div>
+
                         <div className="flex justify-between">
                           <span className="text-gray-500">Train / Test:</span>
                           <span className="text-indigo-300">{(activeModelMetrics.train_samples ?? activeModelMetrics.train_size ?? '—').toLocaleString?.()} / {(activeModelMetrics.test_samples ?? activeModelMetrics.test_size ?? '—').toLocaleString?.()}</span>
@@ -1780,15 +1803,7 @@ export default function App() {
                       <span className="text-emerald-400 font-mono font-bold text-base">{((activeModelMetrics.accuracy ?? activeModel?.accuracy ?? 0) * 100).toFixed(2)}%</span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div className="bg-blue-500/5 p-2.5 rounded-xl border border-blue-500/20 text-center">
-                      <span className="text-blue-300 block text-[10px] mb-0.5">Excl. Regex</span>
-                      <span className="text-blue-400 font-mono font-bold">{activeModelMetrics.excluded_regex?.toLocaleString() ?? 0}</span>
-                    </div>
-                    <div className="bg-amber-500/5 p-2.5 rounded-xl border border-amber-500/20 text-center">
-                      <span className="text-amber-300 block text-[10px] mb-0.5">Excl. LLM/CRM</span>
-                      <span className="text-amber-400 font-mono font-bold">{(activeModelMetrics.excluded_llm)?.toLocaleString() ?? 0}</span>
-                    </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-2 gap-2 text-xs">
                     <div className="bg-emerald-500/5 p-2.5 rounded-xl border border-emerald-500/20 text-center">
                       <span className="text-emerald-300 block text-[10px] mb-0.5">Train Samples</span>
                       <span className="text-emerald-400 font-mono font-bold">{activeModelMetrics.train_samples?.toLocaleString() ?? '—'}</span>
@@ -2671,14 +2686,7 @@ print(response.json())`
                       <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Accuracy</span>
                       <span className="text-emerald-400 font-mono font-semibold">{((inspectParsedMetrics.accuracy ?? 0) * 100).toFixed(2)}%</span>
                     </div>
-                    <div>
-                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Excluded (Regex)</span>
-                      <span className="text-blue-400 font-mono font-semibold">{inspectParsedMetrics.excluded_regex ?? 0}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Excluded (LLM/CRM)</span>
-                      <span className="text-amber-400 font-mono font-semibold">{inspectParsedMetrics.excluded_llm ?? inspectParsedMetrics.excluded_legacy_crm ?? 0}</span>
-                    </div>
+
                     <div className="col-span-2 sm:col-span-1">
                       <span className="text-gray-500 block text-[10px] uppercase tracking-wider mb-0.5">Train / Test Split</span>
                       <span className="text-gray-200 font-mono">

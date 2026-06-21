@@ -127,7 +127,10 @@ def process_csv_task(self, file_path: str):
     processed = 0
     inserted = 0
     errors = 0
+    batch_size = 50
+    from app.services.classify import infer_source
     with Session(engine) as session:
+        batch_entries = []
         for row in rows:
             try:
                 source = (row.get(src_col, "Unknown") if src_col else "Unknown") or "Unknown"
@@ -138,7 +141,6 @@ def process_csv_task(self, file_path: str):
                     continue
 
                 if source.strip() == "Unknown" or not source.strip():
-                    from app.services.classify import infer_source
                     source = infer_source(log_msg)
 
                 label, method, confidence = classify_log(source, log_msg)
@@ -150,19 +152,53 @@ def process_csv_task(self, file_path: str):
                     classification_method=method,
                     confidence=confidence
                 )
-                session.add(entry)
-                session.commit()
+                batch_entries.append(entry)
                 inserted += 1
             except Exception as e:
-                session.rollback()
                 print(f"[Worker] Error processing row {processed + 1}: {e}")
                 errors += 1
 
             processed += 1
 
-            # Update progress via Redis (can be polled by WebSocket)
-            progress = {"processed": processed, "total": total_rows}
-            redis_client.set(f"job_progress_{self.request.id}", json.dumps(progress))
+            # Commit in batches for much better throughput
+            if len(batch_entries) >= batch_size:
+                try:
+                    session.add_all(batch_entries)
+                    session.commit()
+                except Exception as e:
+                    session.rollback()
+                    print(f"[Worker] Batch commit failed, falling back to row-by-row: {e}")
+                    for entry in batch_entries:
+                        try:
+                            session.add(entry)
+                            session.commit()
+                        except Exception:
+                            session.rollback()
+                            errors += 1
+                            inserted -= 1
+                batch_entries = []
+
+            # Update progress via Redis (every 10 rows to reduce overhead)
+            if processed % 10 == 0 or processed == total_rows:
+                progress = {"processed": processed, "total": total_rows}
+                redis_client.set(f"job_progress_{self.request.id}", json.dumps(progress))
+
+        # Commit remaining batch
+        if batch_entries:
+            try:
+                session.add_all(batch_entries)
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                print(f"[Worker] Final batch commit failed, falling back to row-by-row: {e}")
+                for entry in batch_entries:
+                    try:
+                        session.add(entry)
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                        errors += 1
+                        inserted -= 1
 
     print(f"[Worker] Done. Processed={processed}, Inserted={inserted}, Errors={errors}")
 
@@ -284,22 +320,12 @@ def train_model_task(self, file_path: str, dataset_name: str):
 
         valid_logs = []
         valid_labels = []
-        excluded_regex = 0
-        excluded_llm = 0
 
         for msg, lbl, src in zip(raw_logs, raw_labels, raw_sources):
-            if src == "LegacyCRM":
-                excluded_llm += 1
-                continue
-            if classify_with_regex(msg) is not None:
-                excluded_regex += 1
-                continue
             valid_logs.append(msg)
             valid_labels.append(lbl)
 
-        log_msg(f"  Excluded {excluded_regex} regex-classifiable rows")
-        log_msg(f"  Excluded {excluded_llm} LegacyCRM rows (handled by LLM)")
-        log_msg(f"  Remaining rows for BERT training: {len(valid_logs)}")
+        log_msg(f"  Rows for BERT training: {len(valid_logs)}")
 
         bert_distribution: dict = {}
         for lbl in valid_labels:
@@ -310,7 +336,7 @@ def train_model_task(self, file_path: str, dataset_name: str):
             log_msg(f"    {lbl}: {cnt}")
 
         num_records = len(valid_logs)
-        log_msg(f"  Cleaned dataset: {num_records} valid training examples (skipped {total_samples - num_records} rows due to exclusions)")
+        log_msg(f"  Cleaned dataset: {num_records} valid training examples")
 
         if num_records < 10:
             error_msg = f"Insufficient BERT training data. Need at least 10 valid labeled rows after filtering, found {num_records}."
@@ -431,8 +457,6 @@ def train_model_task(self, file_path: str, dataset_name: str):
             "accuracy": accuracy,
             "total_samples": total_samples,
             "bert_samples": num_records,
-            "excluded_regex": excluded_regex,
-            "excluded_llm": excluded_llm,
             "train_samples": len(X_train),
             "test_samples": len(X_test),
             "labels": labels_ordered,
@@ -583,18 +607,10 @@ def train_from_db_task(self):
         excluded_llm = 0
 
         for msg, lbl, src in zip(raw_logs, raw_labels, raw_sources):
-            if src == "LegacyCRM":
-                excluded_llm += 1
-                continue
-            if classify_with_regex(msg) is not None:
-                excluded_regex += 1
-                continue
             valid_logs.append(msg)
             valid_labels.append(lbl)
 
-        log_msg(f"  Excluded {excluded_regex} regex-classifiable rows")
-        log_msg(f"  Excluded {excluded_llm} LegacyCRM rows (handled by LLM)")
-        log_msg(f"  Remaining rows for BERT training: {len(valid_logs)}")
+        log_msg(f"  Rows for BERT training: {len(valid_logs)}")
 
         bert_distribution: dict = {}
         for lbl in valid_labels:
@@ -724,8 +740,6 @@ def train_from_db_task(self):
             "accuracy": accuracy,
             "total_samples": total_samples,
             "bert_samples": num_records,
-            "excluded_regex": excluded_regex,
-            "excluded_llm": excluded_llm,
             "train_samples": len(X_train),
             "test_samples": len(X_test),
             "labels": labels_ordered,

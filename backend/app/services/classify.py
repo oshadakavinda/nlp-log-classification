@@ -46,20 +46,16 @@ def classify(logs):
 
 
 def classify_log(source, log_msg):
-    if source == "LegacyCRM":
-        label, confidence = classify_with_llm_with_confidence(log_msg)
-        return label, "LLM", confidence
-    else:
-        label = classify_with_regex(log_msg)
-        if label:
-            return label, "Regex", 1.0
-        label, confidence = classify_with_bert_with_confidence(log_msg)
-        if label == "Unclassified" or confidence < 0.5:
-            # Fallback to local zero-shot NLI (LLM)
-            fallback_label, fallback_conf = classify_with_llm_with_confidence(log_msg)
-            if fallback_label != "Unclassified":
-                return fallback_label, "LLM", fallback_conf
-        return label, "ML", confidence
+    label = classify_with_regex(log_msg)
+    if label:
+        return label, "Regex", 1.0
+    label, confidence = classify_with_bert_with_confidence(log_msg)
+    if label == "Unclassified" or confidence < 0.5:
+        # Fallback to local zero-shot NLI (LLM)
+        fallback_label, fallback_conf = classify_with_llm_with_confidence(log_msg)
+        if fallback_label != "Unclassified":
+            return fallback_label, "LLM", fallback_conf
+    return label, "ML", confidence
 
 def classify_csv(input_file):
     import pandas as pd

@@ -126,27 +126,6 @@ def load_datasets(data_dir: str) -> pd.DataFrame:
     return combined
 
 
-def filter_bert_data(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Filter out rows that are handled by other processors:
-    - Regex-classifiable rows (handled by processor_regex)
-    - LegacyCRM rows (handled by processor_llm)
-    """
-    # Remove regex-matchable rows
-    df = df.copy()
-    df["regex_label"] = df["log_message"].apply(classify_with_regex)
-    regex_count = df["regex_label"].notna().sum()
-    df = df[df["regex_label"].isna()].drop(columns=["regex_label"])
-
-    # Remove LegacyCRM rows (handled by LLM processor)
-    legacy_count = (df["source"] == "LegacyCRM").sum()
-    df = df[df["source"] != "LegacyCRM"]
-
-    print(f"  Excluded {regex_count} regex-classifiable rows")
-    print(f"  Excluded {legacy_count} LegacyCRM rows (handled by LLM)")
-    print(f"  Remaining rows for BERT training: {len(df)}")
-    return df
-
 
 def train(
     data_dir: str,
@@ -169,25 +148,18 @@ def train(
     for label, count in df["target_label"].value_counts().items():
         print(f"    {label}: {count}")
 
-    # Step 2: Filter for BERT-eligible rows
-    print("\n[2/5] Filtering data for BERT processor...")
-    df_bert = filter_bert_data(df)
-
-    if len(df_bert) < 10:
-        print("ERROR: Not enough data for training after filtering.")
+    # Step 2: Ensure enough data
+    if len(df) < 10:
+        print("ERROR: Not enough data for training.")
         sys.exit(1)
 
-    print("\n  Label distribution (BERT training data):")
-    for label, count in df_bert["target_label"].value_counts().items():
-        print(f"    {label}: {count}")
-
     # Step 3: Generate embeddings
-    print("\n[3/5] Generating sentence embeddings...")
+    print("\n[2/5] Generating sentence embeddings...")
     model_embedding = SentenceTransformer("all-MiniLM-L6-v2")
     X = model_embedding.encode(
-        df_bert["log_message"].tolist(), show_progress_bar=True
+        df["log_message"].tolist(), show_progress_bar=True
     )
-    y = df_bert["target_label"].values
+    y = df["target_label"].values
 
     # Step 4: Train/test split + Logistic Regression
     print(f"\n[4/5] Training model (test_size={test_size}, seed={random_seed})...")

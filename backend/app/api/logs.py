@@ -41,6 +41,8 @@ class LogClassifyResponse(BaseModel):
 
 class LogsResponse(BaseModel):
     total: int
+    page: int
+    page_size: int
     logs: List[LogEntry]
 
 
@@ -75,10 +77,16 @@ def get_logs(
     session: Session = Depends(get_session),
     search: Optional[str] = None,
     method: Optional[str] = None,
-    label: Optional[str] = None
+    label: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
 ):
     session.expire_all()
     from sqlmodel import func
+    
+    # Clamp pagination values
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
     
     # Build query filters
     filters = []
@@ -99,13 +107,15 @@ def get_logs(
         count_stmt = count_stmt.where(f)
     total = session.exec(count_stmt).one() or 0
     
-    # Get all matching logs (no limit)
+    # Get paginated logs
+    offset = (page - 1) * page_size
     logs_stmt = select(LogEntry).order_by(LogEntry.created_at.desc())
     for f in filters:
         logs_stmt = logs_stmt.where(f)
+    logs_stmt = logs_stmt.offset(offset).limit(page_size)
     logs = session.exec(logs_stmt).all()
     
-    return {"total": total, "logs": logs}
+    return {"total": total, "page": page, "page_size": page_size, "logs": logs}
 
 
 @router.get("/stats", response_model=LogStatsResponse)

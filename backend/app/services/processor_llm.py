@@ -7,11 +7,30 @@ classifier = pipeline(
     model="facebook/bart-large-mnli",
 )
 
-CANDIDATE_LABELS = ["workflow error", "deprecation warning"]
-HYPOTHESIS_TEMPLATE = "This log message describes a {}."
+CANDIDATE_LABELS = [
+    "http status code response",
+    "security alert or intrusion",
+    "critical system error",
+    "general error",
+    "resource usage or capacity warning",
+    "user action or activity",
+    "system notification or maintenance",
+    "workflow error",
+    "deprecation warning",
+    "network issue",
+]
+HYPOTHESIS_TEMPLATE = "This log entry is about {}."
 LABEL_MAPPING = {
+    "http status code response": "HTTP Status",
+    "security alert or intrusion": "Security Alert",
+    "critical system error": "Critical Error",
+    "general error": "Error",
+    "resource usage or capacity warning": "Resource Usage",
+    "user action or activity": "User Action",
+    "system notification or maintenance": "System Notification",
     "workflow error": "Workflow Error",
-    "deprecation warning": "Deprecation Warning"
+    "deprecation warning": "Deprecation Warning",
+    "network issue": "Network Issue",
 }
 
 
@@ -45,7 +64,9 @@ def classify_with_llm(log_msg):
     Classify log messages using a local zero-shot NLI model.
     No API key or internet connection needed at inference time.
 
-    Categories: Workflow Error, Deprecation Warning, or Unclassified.
+    Categories: HTTP Status, Security Alert, Critical Error, Error,
+    Resource Usage, User Action, System Notification, Workflow Error,
+    Deprecation Warning, Network Issue, or Unclassified.
     """
     label, _ = classify_with_llm_with_confidence(log_msg)
     return label
