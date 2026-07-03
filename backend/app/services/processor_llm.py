@@ -1,78 +1,99 @@
-from transformers import pipeline
+import httpx
+import json
+from app.core.config import settings
 
-# Load zero-shot classification model locally (no API needed)
-# facebook/bart-large-mnli is the most accurate zero-shot classifier
-classifier = pipeline(
-    "zero-shot-classification",
-    model="facebook/bart-large-mnli",
-)
-
+# Candidate labels for log classification
 CANDIDATE_LABELS = [
-    "http status code response",
-    "security alert or intrusion",
-    "critical system error",
-    "general error",
-    "resource usage or capacity warning",
-    "user action or activity",
-    "system notification or maintenance",
-    "workflow error",
-    "deprecation warning",
-    "network issue",
+    "HTTP Status",
+    "Security Alert",
+    "Critical Error",
+    "Error",
+    "Resource Usage",
+    "User Action",
+    "System Notification",
+    "Workflow Error",
+    "Deprecation Warning",
+    "Network Issue",
+    "Unclassified"
 ]
-HYPOTHESIS_TEMPLATE = "This log entry is about {}."
-LABEL_MAPPING = {
-    "http status code response": "HTTP Status",
-    "security alert or intrusion": "Security Alert",
-    "critical system error": "Critical Error",
-    "general error": "Error",
-    "resource usage or capacity warning": "Resource Usage",
-    "user action or activity": "User Action",
-    "system notification or maintenance": "System Notification",
-    "workflow error": "Workflow Error",
-    "deprecation warning": "Deprecation Warning",
-    "network issue": "Network Issue",
-}
-
 
 def classify_with_llm_with_confidence(log_msg):
     """
-    Classify log messages using a local zero-shot NLI model and return both
-    the label and the confidence score.
+    Classify log messages using Google Gemini API zero-shot classification and return
+    the predicted label and confidence score.
     """
+    api_key = settings.GEMINI_API_KEY
+    if not api_key:
+        print("[Gemini] WARNING: GEMINI_API_KEY is not configured in your .env file. LLM fallback skipped.")
+        return "Unclassified", 0.0
+
+    model = settings.GEMINI_MODEL or "gemini-1.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    prompt = (
+        f"You are a log classifier. Analyze the following log message and select the most appropriate category "
+        f"from the allowed list: {CANDIDATE_LABELS}.\n\n"
+        f"Log Message: \"{log_msg}\"\n\n"
+        f"Return the classification as a JSON object matching the requested schema."
+    )
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "label": {
+                        "type": "STRING",
+                        "enum": CANDIDATE_LABELS,
+                        "description": "The category of the log message"
+                    },
+                    "confidence": {
+                        "type": "NUMBER",
+                        "description": "Confidence score between 0.0 and 1.0"
+                    }
+                },
+                "required": ["label", "confidence"]
+            }
+        }
+    }
+
     try:
-        result = classifier(
-            log_msg,
-            CANDIDATE_LABELS,
-            hypothesis_template=HYPOTHESIS_TEMPLATE,
-            multi_label=True
-        )
-        top_label = result["labels"][0]
-        top_score = float(result["scores"][0])
-
-        # Use 0.5 threshold to filter out unrelated logs (Unclassified)
-        if top_score < 0.5:
-            return "Unclassified", top_score
-
-        return LABEL_MAPPING[top_label], top_score
+        response = httpx.post(url, json=payload, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+        
+        response_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        result = json.loads(response_text)
+        
+        label = result.get("label", "Unclassified")
+        confidence = float(result.get("confidence", 0.0))
+        
+        return label, confidence
     except Exception as e:
-        print(f"Error during local NLI classification: {e}")
+        print(f"[Gemini] Error during API classification: {e}")
         return "Unclassified", 0.0
 
 
 def classify_with_llm(log_msg):
     """
-    Classify log messages using a local zero-shot NLI model.
-    No API key or internet connection needed at inference time.
-
-    Categories: HTTP Status, Security Alert, Critical Error, Error,
-    Resource Usage, User Action, System Notification, Workflow Error,
-    Deprecation Warning, Network Issue, or Unclassified.
+    Classify log messages using the Gemini API.
     """
     label, _ = classify_with_llm_with_confidence(log_msg)
     return label
 
 
 if __name__ == "__main__":
+    # Test block
     test_logs = [
         "Case escalation for ticket ID 7324 failed because the assigned support agent is no longer active.",
         "The 'ReportGenerator' module will be retired in version 4.0. Please migrate to the 'AdvancedAnalyticsSuite' by Dec 2025",

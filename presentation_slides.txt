@@ -1,0 +1,112 @@
+================================================================================
+          NLP Log Classification Platform - PowerPoint Slides Text
+================================================================================
+
+--------------------------------------------------------------------------------
+SPEAKER 1: SANGEETH (Introduction & Problem Statement)
+--------------------------------------------------------------------------------
+
+SLIDE 1: TITLE SLIDE
+--------------------------------------------------------------------------------
+* Title: Hybrid Log Classification & Real-Time Analytics Platform
+* Subtitle: An Intelligent, Production-Ready Observability Solution
+* Team Members:
+  - Udawattha U.K.D.S.T - EG/2021/4837 (Sangeeth)
+  - Niluminda G.W.N. - EG/2021/4691 (Niranga)
+  - Niroshan I.J - EG/2021/4695 (Janith)
+  - Kavinda S.O. - EG/2021/4608 (Oshada)
+* Core Features:
+  - Dynamic Regex Engine
+  - Local BERT Embeddings + Logistic Regression Classifier
+  - Google Gemini API Fallback Zero-Shot Classifier
+  - Closed-Loop Model Retraining & Active Observability Loop
+
+
+SLIDE 2: THE OBSERVABILITY CHALLENGE
+--------------------------------------------------------------------------------
+* Log Explosion: Modern distributed software systems generate massive streams 
+  of raw, unstructured log data every second.
+* Hidden Signals: Critical database connection issues, security intrusions, 
+  and workflow failures are buried in high-volume noise.
+* Manual Obsolescence: Analyzing and categorizing logs manually is impossible 
+  at production scale.
+
+
+SLIDE 3: THE OBSERVABILITY DILEMMA: STATIC VS. COGNITIVE
+--------------------------------------------------------------------------------
+* Static Regex Rules: Extremely fast, but fragile. They fail to understand 
+  language nuances, typos, and novel error formats.
+* Large Language Models (LLMs): High reasoning capabilities, but far too slow 
+  and expensive to evaluate every single raw log line.
+* The Cascade Need: An architecture pairing the speed of local filters with 
+  the intelligence of cloud LLM fallbacks.
+
+
+--------------------------------------------------------------------------------
+SPEAKER 2: NIRANGA (Our Approach / The Hybrid Cascade)
+--------------------------------------------------------------------------------
+
+SLIDE 4: THE 3-STAGE HYBRID CASCADE PIPELINE
+--------------------------------------------------------------------------------
+* Tiered Routing: Logs are routed sequentially to maximize classification speed 
+  and minimize external API consumption.
+* Stage 1 - Dynamic Regex: Instantly filters out predictable, high-frequency 
+  logs (routine status checks, successful backups).
+* Stage 2 - Local ML Layer: Translates log messages into sentence embeddings 
+  and classifies the vast majority of complex logs locally.
+* Stage 3 - LLM Fallback: Routes low-confidence or unseen errors to cloud LLMs 
+  for high-precision zero-shot classification.
+
+
+SLIDE 5: LOCAL PIPELINE EXECUTION (STAGES 1 & 2)
+--------------------------------------------------------------------------------
+* In-Memory Regex Engine: Pre-compiled regex patterns with a 5-second TTL 
+  cache to ensure high-throughput filtering.
+* BERT Sentence Embeddings: Local vector generation using 384-dimensional 
+  embeddings via the sentence-transformers 'all-MiniLM-L6-v2' model.
+* Logistic Regression Classifier: Highly optimized local machine learning 
+  classifier equipped with balanced weights to prevent minority class bias.
+
+
+SLIDE 6: COGNITIVE FALLBACK LAYER (STAGE 3)
+--------------------------------------------------------------------------------
+* Contextual Fallback: Triggers when Stage 2 ML classification confidence falls 
+  below the threshold.
+* Google Gemini API Zero-Shot Classification: Uses the fast 'gemini-2.5-flash' 
+  model to reason over novel or highly ambiguous log patterns.
+* Zero-Training Required: Zero-shot prompt design categorizes new and legacy CRM 
+  logs dynamically without existing training labels.
+
+
+--------------------------------------------------------------------------------
+SPEAKER 3: JANITH (Key Results & Benefits)
+--------------------------------------------------------------------------------
+
+SLIDE 7: THROUGHPUT & COST OPTIMIZATION
+--------------------------------------------------------------------------------
+* Cost Mitigation: Over 90% of logs are resolved locally by Stage 1 & Stage 2, 
+  reducing cloud API dependency and bills.
+* Millisecond Latency: Routine logs classified locally prevent queuing 
+  bottlenecks and database locks.
+* High Efficiency: Pairs cheap local speed with deep semantic capabilities 
+  without scaling costs.
+
+
+SLIDE 8: ZERO-FOOTPRINT OBSERVALITY
+--------------------------------------------------------------------------------
+* No Local LLM Overhead: Relying on the Gemini API removes the need to host 
+  heavy local generative LLM models on server hardware.
+* Hardware Optimization: Saves 1.6+ gigabytes of VRAM/RAM overhead typically 
+  required by local offline models.
+* Lightweight Microservices: The backend (FastAPI, SQLModel, PostgreSQL) starts 
+  instantly and runs efficiently on minimal computing resources.
+
+
+SLIDE 9: CONTINUOUS CLOSED-LOOP ACTIVE LEARNING
+--------------------------------------------------------------------------------
+* Human-in-the-Loop Corrections: Operators override and correct log predictions 
+  directly inside the Logs Analytics table interface.
+* Automated Dataset Curation: The database extracts corrections and logs with 
+  high-confidence scores, filtering out errors.
+* Celery Task Retraining: Background retraining worker trains a new BERT-ML 
+  model and hot-swaps the model version into production with zero downtime.

@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # Groq API Key
     GROQ_API_KEY: str = ""
 
+    # Gemini Config
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
     class Config:
         env_file = ".env"
 

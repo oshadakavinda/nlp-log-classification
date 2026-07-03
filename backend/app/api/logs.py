@@ -377,8 +377,8 @@ def get_system_status(session: Session = Depends(get_session)):
     except Exception:
         pass
 
-    # Local zero-shot NLI classifier is used instead of Groq, which is always available
-    llm_configured = True
+    # Check if Gemini API key is configured
+    llm_configured = bool(settings.GEMINI_API_KEY)
 
     return {
         "database": "healthy" if db_ok else "unhealthy",
